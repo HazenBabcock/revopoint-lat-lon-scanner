@@ -6,6 +6,32 @@ axes are stepper motors driven by a BigTreeTech SKR Mini E3 V3.0.
 
 - [`firmware/`](firmware/) - Marlin configuration and build script for the
   board, which then takes G-code over USB. Licensed separately under the GPLv3.
+- [`lat_lon_scanner/`](lat_lon_scanner/) - Python package that drives the stage
+  and the scanner.
+
+## Scanning
+
+Install [revopoint-python](https://github.com/HazenBabcock/revopoint-python)
+(`pip install -e <checkout>`), then this package (`pip install -e .`).
+
+After powering up the stage, energize the motors, push the cradle upright by
+hand (the motors hold it there), and declare that pose as zero:
+
+```bash
+python -m lat_lon_scanner.stage zero
+```
+
+Then scan. Each run goes to `~/Data/revopoint/<date>/<name>/`, with one `.npz`
+per view holding the depth frames and stereo images at each exposure:
+
+```bash
+python -m lat_lon_scanner.capture duck
+```
+
+The default plan is latitudes +90, +60, +30, 0 and −20 with longitude every
+30° (49 views, about 15 s each), capturing 4 depth frames at each of three
+exposures (12000, 24000, 40000). `python -m lat_lon_scanner.stage` also takes
+`position`, `move <latitude> <longitude>` and `release`.
 
 ## Stage conventions
 
