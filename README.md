@@ -35,6 +35,27 @@ view captures 4 depth frames at each of three exposures (12000, 24000, 40000).
 `python -m lat_lon_scanner.stage` also takes `position`,
 `move <latitude> <longitude>` and `release`.
 
+## Reconstruction
+
+```bash
+python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/duck
+```
+
+This needs the `reconstruct` extras (Open3D, SciPy) and writes
+`reconstruction/` inside the run: `point_cloud.ply` (positions in mm, normals,
+and the scanner's grayscale brightness as color), `stage_axes.json`, and
+`preview_*.png` renderings from six directions.
+
+The stage needs no separate calibration. The two rotation axes are fitted from
+the scan itself, by minimizing how far neighboring views disagree once each is
+turned back by its commanded angles. On the first duck scan the axes came out
+0.5 mm from intersecting, and neighboring views agreed to about 0.3 mm. Each
+view is filtered (pixels at depth edges and surfaces seen nearly edge-on are
+dropped), the views are merged, and the result is cropped to the object: the
+post and cap it sits on are found as a stack of cylinders on the turntable axis
+and cut away. Red and yellow surfaces reflect little of the scanner's blue
+light, so expect holes there (the duck's beak).
+
 ## Stage conventions
 
 Positions are in degrees. Zero is the cradle upright (turntable axis vertical),
