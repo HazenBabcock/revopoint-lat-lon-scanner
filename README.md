@@ -49,3 +49,8 @@ set with `G92 X0 Y0` after each power-up since there are no limit switches.
   turntable plate.
 - Turning the object counterclockwise moves the scanner's viewpoint clockwise
   around it, so +Y lowers the viewpoint's longitude on the object.
+
+## License
+
+MIT (see `LICENSE`), except `firmware/`, which is derived from Marlin and
+licensed under the GPLv3 (see `firmware/LICENSE`).

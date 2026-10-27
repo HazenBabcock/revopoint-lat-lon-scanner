@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,8 @@ name = "lat_lon_scanner"
 version = "0.1.0"
 description = "Drive the lat/lon stage and a Revopoint MINI scanner to build point clouds."
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
 # Also needs revopoint-python (github.com/HazenBabcock/revopoint-python), which
 # is not on PyPI: install it with 'pip install -e <checkout>'.
 dependencies = ["numpy", "pyserial", "requests"]
