@@ -18,6 +18,7 @@ Each run is written to <data_root>/<date>/<name>/:
 import argparse
 import datetime
 import json
+import math
 import os
 import pathlib
 import time
@@ -32,25 +33,41 @@ default_data_root = pathlib.Path.home() / "Data" / "revopoint"
 # The scanning range runs from +90 (looking straight down on the object) to
 # -20; below that the view is mostly the mount and turntable plate.
 default_latitudes = (90, 60, 30, 0, -20)
-default_longitude_step_degrees = 30
+
+# Target distance between neighboring views, as degrees of arc on the sphere
+# of view directions. Matches the 30 degree spacing between latitude rows.
+default_spacing_degrees = 30
 
 
-def scan_plan(latitudes = default_latitudes, longitude_step_degrees = default_longitude_step_degrees):
+def longitudes_for_latitude(latitude, spacing_degrees = default_spacing_degrees):
+    """
+    Evenly spaced longitudes for one latitude row, as many as fit with about
+    spacing_degrees of arc between them. A circle of latitude is cos(latitude)
+    times as long as the equator, so rows get fewer views toward the pole and a
+    single view at +-90.
+    """
+    count = max(1, round(360.0 * math.cos(math.radians(latitude)) / spacing_degrees))
+    return [360.0 * index / count for index in range(count)]
+
+
+def scan_plan(latitudes = default_latitudes, spacing_degrees = default_spacing_degrees):
     """
     Return the list of (latitude, longitude) poses to visit, in order.
 
-    At +-90 latitude the turntable axis points at the scanner, so turning it
-    only rolls the same view; one pose is taken there. The longitude direction
-    alternates after each full row so the turntable never has to swing back.
+    The longitude direction alternates after each full row so the turntable
+    never has to swing back. A single-view row (at +-90 latitude the turntable
+    axis points at the scanner, so turning it only rolls the view) keeps the
+    turntable where it is.
     """
-    longitudes = list(np.arange(0, 360, longitude_step_degrees, dtype = float))
     poses = []
     ascending = True
     for latitude in latitudes:
-        if abs(latitude) == stage_module.latitude_hard_limit_degrees:
+        row = longitudes_for_latitude(latitude, spacing_degrees)
+        if len(row) == 1:
             row = [poses[-1][1] if poses else 0.0]
         else:
-            row = longitudes if ascending else longitudes[::-1]
+            if not ascending:
+                row = row[::-1]
             ascending = not ascending
         poses.extend((float(latitude), float(longitude)) for longitude in row)
     return poses
@@ -112,7 +129,8 @@ def main():
     parser.add_argument("--data-root", type = pathlib.Path, default = default_data_root,
                         help = "Default %(default)s.")
     parser.add_argument("--latitudes", type = float, nargs = "+", default = default_latitudes)
-    parser.add_argument("--longitude-step", type = float, default = default_longitude_step_degrees)
+    parser.add_argument("--spacing", type = float, default = default_spacing_degrees,
+                        help = "Target arc between neighboring views, degrees (default %(default)s).")
     parser.add_argument("--exposures", type = int, nargs = "+", default = scanner_module.default_exposures)
     parser.add_argument("--frames", type = int, default = 4, help = "Depth frames per exposure.")
     parser.add_argument("--speed", type = float, default = stage_module.default_speed_degrees_per_second,
@@ -124,7 +142,7 @@ def main():
     for latitude in arguments.latitudes:
         if abs(latitude) > stage_module.latitude_hard_limit_degrees:
             parser.error(f"Latitude {latitude} is outside +-{stage_module.latitude_hard_limit_degrees}")
-    poses = scan_plan(arguments.latitudes, arguments.longitude_step)
+    poses = scan_plan(arguments.latitudes, arguments.spacing)
     if arguments.maximum_views is not None:
         poses = poses[:arguments.maximum_views]
     run_directory = arguments.data_root / arguments.date / arguments.name

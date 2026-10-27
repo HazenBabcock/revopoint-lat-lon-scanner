@@ -28,10 +28,12 @@ per view holding the depth frames and stereo images at each exposure:
 python -m lat_lon_scanner.capture duck
 ```
 
-The default plan is latitudes +90, +60, +30, 0 and −20 with longitude every
-30° (49 views, about 15 s each), capturing 4 depth frames at each of three
-exposures (12000, 24000, 40000). `python -m lat_lon_scanner.stage` also takes
-`position`, `move <latitude> <longitude>` and `release`.
+The default plan is latitudes +90, +60, +30, 0 and −20, with each row's
+longitudes spaced so neighboring views are about 30° of arc apart on the sphere
+(`--spacing`): 1, 6, 10, 12 and 11 views, 40 in all at about 15 s each. Each
+view captures 4 depth frames at each of three exposures (12000, 24000, 40000).
+`python -m lat_lon_scanner.stage` also takes `position`,
+`move <latitude> <longitude>` and `release`.
 
 ## Stage conventions
 
