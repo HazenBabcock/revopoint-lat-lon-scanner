@@ -29,6 +29,8 @@ unmodified, so `git diff` against it shows every change. In summary:
   current instead of dropping to half when stopped.
 - Run currents set from the motor ratings above. Ratings are treated as peak
   current, so the RMS ceiling is the rating divided by √2.
+- Driver temperature reporting (`TMC_DEBUG`, `MONITOR_DRIVER_STATUS`), with
+  `STOP_ON_ERROR` left off. See [Driver temperature](#driver-temperature).
 
 ## Building
 
@@ -62,6 +64,8 @@ rate does not matter.
 | `M400` | Wait until all moves have finished. |
 | `M114` | Report the position. |
 | `M906 X800 Y480` | Change run currents (mA RMS). `M500` saves them. |
+| `M122` | Full driver status, including the temperature flags. |
+| `M911` | Report any over-temperature pre-warnings. |
 | `M18` / `M84` | Release the motors. |
 
 Things to know:
@@ -77,6 +81,20 @@ Things to know:
   immediately but keeps them energized; the position may be off afterwards.
 - Settings saved with `M500` override the compiled defaults, even after
   reflashing. `M502` followed by `M500` restores the defaults.
+
+## Driver temperature
+
+The TMC2209s have no temperature readout, only threshold flags: a pre-warning
+at about 120 °C, comparators at 120, 143, 150 and 157 °C, and a shutdown at
+about 150 °C. In shutdown a driver turns its outputs off until it cools, so
+it protects itself, but **its motor goes limp** and the stage can move.
+
+- `M122` shows each driver's flags; `M911` lists pre-warnings.
+- Marlin polls the drivers. If a pre-warning persists, it lowers that motor's
+  current by 50 mA and reports the change, trading holding torque for staying
+  out of shutdown.
+- `STOP_ON_ERROR` is off. It would halt the firmware on an over-temperature or
+  short-circuit error, which releases both motors.
 
 ## License
 
