@@ -9,10 +9,25 @@ axes are stepper motors driven by a BigTreeTech SKR Mini E3 V3.0.
 - [`lat_lon_scanner/`](lat_lon_scanner/) - Python package that drives the stage
   and the scanner.
 
-## Scanning
+## Requirements
 
-Install [revopoint-python](https://github.com/HazenBabcock/revopoint-python)
-(`pip install -e <checkout>`), then this package (`pip install -e .`).
+All access to the scanner goes through
+[revopoint-python](https://github.com/HazenBabcock/revopoint-python), which
+talks to the Revopoint MINI over WiFi: depth capture, exposure control and its
+calibration files. It is not on PyPI, so install it from a checkout first:
+
+```bash
+git clone https://github.com/HazenBabcock/revopoint-python.git
+pip install -e revopoint-python
+```
+
+Then install this package, with the extras for reconstruction and tests:
+
+```bash
+pip install -e ".[reconstruct,test]"
+```
+
+## Scanning
 
 After powering up the stage, energize the motors, push the cradle upright by
 hand (the motors hold it there), and declare that pose as zero:
