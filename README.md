@@ -8,8 +8,8 @@ axes are stepper motors driven by a BigTreeTech SKR Mini E3 V3.0.
   board, which then takes G-code over USB. Licensed separately under the GPLv3.
 - [`lat_lon_scanner/`](lat_lon_scanner/) - Python package that drives the stage
   and the scanner.
-- [`cad/`](cad/) - FreeCAD models of the stage, and the DXF and STL files sent
-  out for fabrication.
+- [`cad/`](cad/) - FreeCAD models of the stage, the DXF and STL files sent out
+  for fabrication, and the bill of materials.
 
 ## Requirements
 
@@ -118,8 +118,9 @@ set with `G92 X0 Y0` after each power-up since there are no limit switches.
 
 ## CAD
 
-[`cad/`](cad/) has the FreeCAD 1.1 models of the stage and the files sent out
-for fabrication. The assemblies also use models that can't be redistributed
+[`cad/`](cad/) has the FreeCAD 1.1 models of the stage, the files sent out for
+fabrication, and the bill of materials
+([`scanner_mount_bom.xlsx`](cad/scanner_mount_bom.xlsx)). The assemblies also use models that can't be redistributed
 here, so FreeCAD opens them with those parts missing:
 
 - The scanner, from [Revopoint Mini](https://grabcad.com/library/revopoint-mini-1)
