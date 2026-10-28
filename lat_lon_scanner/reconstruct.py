@@ -35,7 +35,9 @@ placed using the main run's fitted axes.
 import argparse
 import json
 import pathlib
+import shutil
 import struct
+import sys
 import time
 import warnings
 
@@ -73,6 +75,58 @@ minimum_facing_cosine = 0.25
 
 default_crop_radius_millimeters = 32.0
 default_voxel_millimeters = 0.3
+
+
+class Progress(object):
+    """
+    Progress output for a reconstruction, each line starting with the time
+    since it began. report() prints a finished step's result. update() is
+    called often during a long step (loading views, the fits): on a terminal
+    it keeps one line updated in place; when the output goes to a file, it
+    prints a line about every heartbeat_seconds.
+    """
+    def __init__(self, heartbeat_seconds = 30.0):
+        self.start = time.monotonic()
+        self.heartbeat_seconds = heartbeat_seconds
+        self.on_terminal = sys.stdout.isatty()
+        self.last_update = self.start
+        self.live_line_shown = False
+
+    def elapsed(self):
+        seconds = int(time.monotonic() - self.start)
+        return f"{seconds // 60:3d}:{seconds % 60:02d}"
+
+    def report(self, message):
+        line = f"[{self.elapsed()}] {message}"
+        print(f"\r{line}\033[K" if self.live_line_shown else line, flush = True)
+        self.live_line_shown = False
+        self.last_update = time.monotonic()
+
+    def update(self, message):
+        now = time.monotonic()
+        if now - self.last_update < (0.5 if self.on_terminal else self.heartbeat_seconds):
+            return
+        self.last_update = now
+        line = f"[{self.elapsed()}] {message}"
+        if self.on_terminal:
+            # Kept within the terminal's width, since a wrapped line can't be rewritten in place.
+            print(f"\r{line[:shutil.get_terminal_size().columns - 1]}\033[K", end = "", flush = True)
+            self.live_line_shown = True
+        else:
+            print(line, flush = True)
+
+    def tracked(self, cost, label):
+        """Wrap a fit's cost function so update() shows its evaluations and best value so far."""
+        evaluations, best = 0, np.inf
+
+        def tracked_cost(trial):
+            nonlocal evaluations, best
+            value = cost(trial)
+            evaluations += 1
+            best = min(best, value)
+            self.update(f"  {label}: {evaluations} evaluations, best {best:.3f} mm")
+            return value
+        return tracked_cost
 
 
 def read_rectified_camera_matrix(path):
@@ -306,7 +360,7 @@ def estimate_center(upright_points):
     return np.array([np.median(largest[:, 0]), np.median(largest[:, 1]), np.percentile(largest[:, 2], 2) + width / 2])
 
 
-def fit_stage_model(view_points, poses, center_guess, crop_radius):
+def fit_stage_model(view_points, poses, center_guess, crop_radius, progress = None):
     """
     Fit the StageModel: the axes by minimizing the misalignment between
     neighboring views, then the nod with views farther apart compared as well,
@@ -320,6 +374,7 @@ def fit_stage_model(view_points, poses, center_guess, crop_radius):
     the neighbors-only one.
     """
     nod_arc_degrees, nod_keep_fraction = 70.0, 0.4
+    progress = progress if progress is not None else Progress()
     pairs = neighbor_pairs(poses)
     parameters = np.array([0, 0, 0, 0, center_guess[1], center_guess[2], center_guess[0], center_guess[2]], float)
     nod = np.zeros(2)
@@ -331,9 +386,9 @@ def fit_stage_model(view_points, poses, center_guess, crop_radius):
     def fit_axes(clouds, keep_fraction, label):
         cost = lambda trial_parameters: misalignment(place(clouds, trial_parameters, nod), pairs, keep_fraction)
         start_cost = cost(parameters)
-        result = scipy.optimize.minimize(cost, parameters, method = "Powell",
+        result = scipy.optimize.minimize(progress.tracked(cost, label), parameters, method = "Powell",
                                          options = {"xtol" : 1e-3, "ftol" : 1e-5, "maxfev" : 4000})
-        print(f"  {label}: misalignment {start_cost:.3f} -> {result.fun:.3f} mm", flush = True)
+        progress.report(f"  {label}: misalignment {start_cost:.3f} -> {result.fun:.3f} mm")
         return result.x, float(result.fun)
 
     for voxel_size, keep_fraction in [(1.5, 0.5), (0.8, 0.6)]:
@@ -345,18 +400,18 @@ def fit_stage_model(view_points, poses, center_guess, crop_radius):
     nod_pairs = neighbor_pairs(poses, nod_arc_degrees)
     nod_cost = lambda trial_nod: misalignment(place(clouds, parameters, trial_nod), nod_pairs, nod_keep_fraction)
     start_cost = nod_cost(nod)
-    result = scipy.optimize.minimize(nod_cost, [0.0, -0.5 * crop_radius], method = "Powell",
+    result = scipy.optimize.minimize(progress.tracked(nod_cost, "nod fit"), [0.0, -0.5 * crop_radius], method = "Powell",
                                      bounds = [(-10.0, 10.0), (-crop_radius, crop_radius)],
                                      options = {"xtol" : 1e-2, "ftol" : 1e-5, "maxfev" : 300})
     nod = result.x
-    print(f"  nod fit on views up to {nod_arc_degrees:.0f} degrees apart: misalignment {start_cost:.3f} -> {result.fun:.3f} mm, "
-          f"nod {nod[0]:+.2f} degrees x sin(latitude) about a pivot {nod[1]:+.1f} mm along the turntable axis "
-          f"from the rotation center", flush = True)
+    progress.report(f"  nod fit on views up to {nod_arc_degrees:.0f} degrees apart: misalignment {start_cost:.3f} -> "
+                    f"{result.fun:.3f} mm, nod {nod[0]:+.2f} degrees x sin(latitude) about a pivot {nod[1]:+.1f} mm "
+                    f"along the turntable axis from the rotation center")
     parameters, fit_misalignment = fit_axes(clouds, keep_fraction, "axes refit with the nod")
     return StageModel(parameters, center_guess, *nod), fit_misalignment
 
 
-def refine_poses(object_clouds, poses, voxel_size = 0.8, maximum_distance = 1.0):
+def refine_poses(object_clouds, poses, voxel_size = 0.8, maximum_distance = 1.0, progress = None):
     """
     Joint (multiway) ICP over neighboring views. Returns a small correction
     transform for each view, applied after the stage model.
@@ -376,9 +431,10 @@ def refine_poses(object_clouds, poses, voxel_size = 0.8, maximum_distance = 1.0)
     for _ in clouds:
         pose_graph.nodes.append(open3d.pipelines.registration.PoseGraphNode(np.eye(4)))
     estimation = open3d.pipelines.registration.TransformationEstimationPointToPlane()
-    for i, j in neighbor_pairs(poses):
-        if i >= j:
-            continue
+    progress = progress if progress is not None else Progress()
+    pairs = [(i, j) for i, j in neighbor_pairs(poses) if i < j]
+    for pair_index, (i, j) in enumerate(pairs):
+        progress.update(f"  joint refinement: aligning neighboring views, pair {pair_index + 1}/{len(pairs)}")
         result = open3d.pipelines.registration.registration_icp(clouds[i], clouds[j], maximum_distance, np.eye(4), estimation)
         information = open3d.pipelines.registration.get_information_matrix_from_point_clouds(
             clouds[i], clouds[j], maximum_distance, result.transformation)
@@ -503,11 +559,12 @@ def render_preview(points, normals, colors, eye_direction, up_hint, image_size =
     return (255 * image).astype(np.uint8)
 
 
-def load_run_views(run_directory, depth_band_raw = default_depth_band_raw):
+def load_run_views(run_directory, depth_band_raw = default_depth_band_raw, progress = None):
     """
     Return (poses, points, normals, brightness) for each view of a run, in the
     camera frame, with edge pixels and edge-on surfaces already dropped.
     """
+    progress = progress if progress is not None else Progress()
     run_directory = pathlib.Path(run_directory)
     information = json.loads((run_directory / "run.json").read_text())
     poses = [tuple(pose) for pose in information["poses"]]
@@ -517,6 +574,7 @@ def load_run_views(run_directory, depth_band_raw = default_depth_band_raw):
 
     view_points, view_normals, view_brightness = [], [], []
     for view_index in range(len(poses)):
+        progress.update(f"loading {run_directory.name}: view {view_index + 1}/{len(poses)}")
         view_data = np.load(run_directory / f"view_{view_index:03d}.npz")
         depth = remove_depth_edges(merge_exposures(view_data, information["exposures"], depth_band_raw))
         points, rows, columns = depth_to_points(depth, camera_matrix)
@@ -545,16 +603,16 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     output_directory.mkdir(exist_ok = True)
     camera_matrix = read_rectified_camera_matrix(run_directory / "calibration" / "mapparamL.bin")
 
-    start = time.monotonic()
-    poses, view_points, view_normals, view_brightness = load_run_views(run_directory, depth_band_raw)
-    print(f"{len(poses)} views loaded, {sum(len(p) for p in view_points)} points, {time.monotonic() - start:.0f} s", flush = True)
+    progress = Progress()
+    poses, view_points, view_normals, view_brightness = load_run_views(run_directory, depth_band_raw, progress)
+    progress.report(f"{len(poses)} views loaded, {sum(len(p) for p in view_points)} points")
 
     upright_index = nearest_upright_view(poses)
     center_guess = estimate_center(view_points[upright_index])
-    print(f"  first rotation center guess from the view at {poses[upright_index]}", flush = True)
-    model, fit_misalignment = fit_stage_model(view_points, poses, center_guess, crop_radius)
+    progress.report(f"  first rotation center guess from the view at {poses[upright_index]}")
+    model, fit_misalignment = fit_stage_model(view_points, poses, center_guess, crop_radius, progress)
     center, axis_gap = model.rotation_center()
-    print(f"  rotation center {center.round(2)} mm, axes {axis_gap:.2f} mm apart", flush = True)
+    progress.report(f"  rotation center {center.round(2)} mm, axes {axis_gap:.2f} mm apart")
 
     transforms = [model.camera_to_object(*pose) for pose in poses]
     near_center = [np.linalg.norm(points - center, axis = 1) < crop_radius for points in view_points]
@@ -563,16 +621,16 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     check_clouds = [downsample(cloud, 0.8) for cloud in object_clouds]
     before = misalignment(check_clouds, pairs, 0.6)
     if refine:
-        corrections = refine_poses(object_clouds, poses)
+        corrections = refine_poses(object_clouds, poses, progress = progress)
         transforms = [correction @ transform for correction, transform in zip(corrections, transforms)]
         object_clouds = [apply_transform(correction, cloud) for correction, cloud in zip(corrections, object_clouds)]
         after = misalignment([downsample(cloud, 0.8) for cloud in object_clouds], pairs, 0.6)
-        print(f"  joint refinement: misalignment {before:.3f} -> {after:.3f} mm", flush = True)
+        progress.report(f"  joint refinement: misalignment {before:.3f} -> {after:.3f} mm")
     else:
         after = before
 
     for extra_run in extra_runs:
-        extra_poses, extra_points, extra_normals, extra_brightness = load_run_views(extra_run, depth_band_raw)
+        extra_poses, extra_points, extra_normals, extra_brightness = load_run_views(extra_run, depth_band_raw, progress)
         extra_transforms = [model.camera_to_object(*pose) for pose in extra_poses]
         extra_near = [np.linalg.norm(points - center, axis = 1) < crop_radius for points in extra_points]
         object_clouds += [apply_transform(transform, points[mask])
@@ -581,7 +639,7 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
         near_center += extra_near
         view_normals += extra_normals
         view_brightness += extra_brightness
-        print(f"  added {len(extra_poses)} views from {extra_run}", flush = True)
+        progress.report(f"  added {len(extra_poses)} views from {extra_run}")
 
     points = np.concatenate(object_clouds)
     normals = np.concatenate([normals[mask] @ transform[:3, :3].T
@@ -594,8 +652,8 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     up = model.longitude_axis
     axis_point = model.longitude_point + ((center - model.longitude_point) @ up) * up
     keep, mount_top, mount_radius = remove_mount(points, axis_point, up)
-    print(f"  mount cut away: top {mount_top:.1f} mm along the turntable axis from the rotation center, "
-          f"radius {mount_radius:.1f} mm", flush = True)
+    progress.report(f"  mount cut away: top {mount_top:.1f} mm along the turntable axis from the rotation center, "
+                    f"radius {mount_radius:.1f} mm")
 
     cloud = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(points[keep]))
     cloud.normals = open3d.utility.Vector3dVector(normals[keep])
@@ -604,13 +662,13 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     cloud, _ = cloud.remove_statistical_outlier(nb_neighbors = 20, std_ratio = 2.0)
     before_cluster = len(cloud.points)
     cloud = keep_largest_cluster(cloud, 3 * voxel_size)
-    print(f"  kept the largest connected piece: {len(cloud.points)} of {before_cluster} points", flush = True)
+    progress.report(f"  kept the largest connected piece: {len(cloud.points)} of {before_cluster} points")
     normals = np.asarray(cloud.normals)
     cloud.normals = open3d.utility.Vector3dVector(normals / np.linalg.norm(normals, axis = 1, keepdims = True))
     open3d.io.write_point_cloud(str(output_directory / "point_cloud.ply"), cloud)
     final_points = np.asarray(cloud.points)
     extent = final_points.max(axis = 0) - final_points.min(axis = 0)
-    print(f"  {len(final_points)} points written, extent {extent.round(1)} mm", flush = True)
+    progress.report(f"  {len(final_points)} points written, extent {extent.round(1)} mm")
 
     axes_record = {"latitude_axis" : model.latitude_axis.tolist(), "latitude_point" : model.latitude_point.tolist(),
                    "longitude_axis" : model.longitude_axis.tolist(), "longitude_point" : model.longitude_point.tolist(),
@@ -645,7 +703,7 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
             image = render_preview(final_points, np.asarray(cloud.normals), point_colors, direction, up,
                                    point_millimeters = voxel_size)
             open3d.io.write_image(str(output_directory / f"preview_{name}_{suffix}.png"), open3d.geometry.Image(image))
-    print(f"done in {time.monotonic() - start:.0f} s -> {output_directory}", flush = True)
+    progress.report(f"done -> {output_directory}")
 
 
 def main():
