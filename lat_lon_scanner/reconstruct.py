@@ -83,6 +83,12 @@ brightness_exposure = 24000
 # and take no color from a color frame whose camera sees them that steeply.
 minimum_facing_cosine = 0.25
 
+# A view with fewer points than this is left out: it adds nothing to the fits,
+# and normals can't be estimated without neighbors. On 2026-10-28 a white nylon
+# part, scanned at exposures that saturate it (12000 and 24000), left three
+# views with 0-8 points, and the empty one stopped the reconstruction.
+minimum_view_points = 100
+
 default_crop_radius_millimeters = 32.0
 default_voxel_millimeters = 0.3
 
@@ -749,23 +755,29 @@ def load_run_views(run_directory, depth_band_raw = default_depth_band_raw, progr
     Return (poses, points, normals, brightness, color frames) for each view of
     a run, in the camera frame, with edge pixels and edge-on surfaces already
     dropped. A view's color frame is (frame, color camera calibration), or
-    None if the run has no color frames.
+    None if the run has no color frames. Views with fewer than
+    minimum_view_points points are left out, with a warning.
     """
     progress = progress if progress is not None else Progress()
     run_directory = pathlib.Path(run_directory)
     information = json.loads((run_directory / "run.json").read_text())
-    poses = [tuple(pose) for pose in information["poses"]]
+    all_poses = [tuple(pose) for pose in information["poses"]]
     camera_matrix = read_rectified_camera_matrix(run_directory / "calibration" / "mapparamL.bin")
     color_camera = read_color_camera(run_directory / "calibration")
     # Brightness comes from brightness_exposure, or the nearest exposure the run has.
     exposure_for_brightness = min(information["exposures"], key = lambda exposure: abs(exposure - brightness_exposure))
 
-    view_points, view_normals, view_brightness, view_color_frames = [], [], [], []
-    for view_index in range(len(poses)):
-        progress.update(f"loading {run_directory.name}: view {view_index + 1}/{len(poses)}")
+    poses, view_points, view_normals, view_brightness, view_color_frames = [], [], [], [], []
+    for view_index, pose in enumerate(all_poses):
+        progress.update(f"loading {run_directory.name}: view {view_index + 1}/{len(all_poses)}")
         view_data = np.load(run_directory / f"view_{view_index:03d}.npz")
         depth = remove_depth_edges(merge_exposures(view_data, information["exposures"], depth_band_raw))
         points, rows, columns = depth_to_points(depth, camera_matrix)
+        if len(points) < minimum_view_points:
+            progress.report(f"  view {view_index} at {pose} left out: only {len(points)} points "
+                            f"(over- or underexposed? see the exposures)")
+            continue
+        poses.append(pose)
         # Normals in the camera frame, facing the camera that saw them.
         cloud = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(points))
         cloud.estimate_normals(open3d.geometry.KDTreeSearchParamHybrid(radius = 1.0, max_nn = 30))
@@ -780,6 +792,8 @@ def load_run_views(run_directory, depth_band_raw = default_depth_band_raw, progr
             view_color_frames.append((view_data["color"], color_camera))
         else:
             view_color_frames.append(None)
+    if not poses:
+        raise RuntimeError(f"No view of {run_directory} has {minimum_view_points} or more points; check the exposures")
     return poses, view_points, view_normals, view_brightness, view_color_frames
 
 

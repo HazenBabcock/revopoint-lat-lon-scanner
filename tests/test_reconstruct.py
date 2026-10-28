@@ -1,4 +1,7 @@
 """Tests for lat_lon_scanner.reconstruct."""
+import json
+import struct
+
 import numpy as np
 import pytest
 from scipy.spatial.transform import Rotation
@@ -70,6 +73,40 @@ def test_depth_band_follows_the_scanner():
     covering = reconstruct.merge_exposures(view_data, [12000], depth_band_raw = (20000, 45000))
     assert np.array_equal(np.isnan(default), np.isnan(covering))
     assert np.nanmax(np.abs(default - covering)) == 0
+
+
+def write_run(run_directory, view_depths, exposure = 12000):
+    """
+    A capture run on disk: run.json, the left camera's calibration file (an
+    unrotated camera, f 896, center (320, 200)), and one view per raw depth
+    stack in view_depths, at latitude 0, 30, 60, ...
+    """
+    (run_directory / "calibration").mkdir(parents = True)
+    camera_matrix = np.array([[896.0, 0, 320], [0, 896.0, 200], [0, 0, 1]])
+    floats = list(np.eye(3).ravel()) + [320.0, 200.0, 896.0, 896.0] + [0.0] * 12 + list(np.linalg.inv(camera_matrix).ravel())
+    (run_directory / "calibration" / "mapparamL.bin").write_bytes(struct.pack("<3i", 400, 640, 5) + struct.pack(f"<{len(floats)}f", *floats))
+    poses = [(30.0 * index, 0.0) for index in range(len(view_depths))]
+    (run_directory / "run.json").write_text(json.dumps({"poses" : poses, "exposures" : [exposure]}))
+    for index, depth in enumerate(view_depths):
+        np.savez(run_directory / f"view_{index:03d}.npz", **{f"depth_{exposure}" : depth.astype(np.uint16),
+                                                              f"mono_{exposure}" : np.full((800, 640), 128, np.uint8)})
+    return poses
+
+
+def test_view_without_depth_is_left_out(tmp_path):
+    # 2026-10-28: a white nylon part, scanned at exposures that saturate it,
+    # left a view with no depth at all, and the normal estimation stopped the
+    # whole reconstruction. Such a view must be left out instead.
+    random_generator = np.random.default_rng(9)
+    good = np.array([synthetic_frames(random_generator) for _ in range(3)])
+    poses = write_run(tmp_path / "run", [good, np.zeros_like(good), good])
+    loaded_poses, view_points, view_normals, _, view_color_frames = reconstruct.load_run_views(tmp_path / "run")
+    assert loaded_poses == [poses[0], poses[2]]
+    assert len(view_points) == len(view_normals) == len(view_color_frames) == 2
+    assert all(len(points) > 10000 for points in view_points)
+    write_run(tmp_path / "empty_run", [np.zeros_like(good)])
+    with pytest.raises(RuntimeError):
+        reconstruct.load_run_views(tmp_path / "empty_run")
 
 
 def mount_and_box(random_generator):
