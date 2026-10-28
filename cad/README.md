@@ -34,8 +34,11 @@ From the opposite corner, with the control board in front.
 | File | Exported to |
 |---|---|
 | `base_plate.FCStd`, `lat_lon_plate.FCStd`, `scanner_mount_plate.FCStd` | DXF, `exports/2026-10-11_ponoko/` |
-| `counter_weight.FCStd` | DXF, `exports/2026-10-10_xometry/` |
 | `counter_weight_clamp.FCStd`, `lat_stepper_arm.FCStd` (stepper arm and idle arm), `lon_plate.FCStd`, `stepper_lat_mount.FCStd`, `stepper_lon_mount.FCStd` | STL, `exports/2026-10-11_xometry/` |
+
+The counterweights aren't modeled. Each of the two counterweight clamps holds a
+piece of 1/2" x 1/2" copper bar about 1.25" (32 mm) long. Both pieces are cut
+from one 6" bar, McMaster-Carr [89275K36](https://www.mcmaster.com/89275K36).
 
 ## Missing parts
 
