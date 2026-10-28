@@ -1,6 +1,7 @@
 """Tests for lat_lon_scanner.reconstruct."""
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 import lat_lon_scanner.capture as capture
 import lat_lon_scanner.reconstruct as reconstruct
@@ -106,3 +107,27 @@ def test_mount_is_measured_from_the_turntable_axis():
     assert keep[mount_count:].all()
     with pytest.raises(RuntimeError):
         reconstruct.remove_mount(points, np.array([0.8, 0.0, 0.0]), up)
+
+
+def rotate_about(points, axis, point, degrees):
+    return Rotation.from_rotvec(np.radians(degrees) * axis).apply(points - point) + point
+
+
+def test_nod_is_undone():
+    # A view is made the way the stage moves the object: the turntable turns,
+    # the object nods on its mount about the pivot (gain * sin(latitude),
+    # the same way as the latitude), then the cradle tilts. The model must
+    # bring every point back to where it started.
+    model = reconstruct.StageModel([0.01, -0.02, 0.03, 0.01, -1.0, 175.0, 43.0, 176.0], [43.0, 0.0, 175.0],
+                                   nod_gain_degrees = 2.0, nod_pivot_height = -28.5)
+    center, _ = model.rotation_center()
+    assert (model.nod_pivot - center) @ model.longitude_axis == pytest.approx(-28.5)
+    to_pivot = model.nod_pivot - model.longitude_point
+    assert np.linalg.norm(np.cross(to_pivot, model.longitude_axis)) == pytest.approx(0.0, abs = 1e-9)
+
+    points = center + np.random.default_rng(6).uniform(-30, 30, (200, 3))
+    for latitude, longitude in [(30.0, 45.0), (-20.0, 200.0), (90.0, 0.0)]:
+        turned = rotate_about(points, model.longitude_axis, model.longitude_point, longitude)
+        nodded = rotate_about(turned, model.latitude_axis, model.nod_pivot, 2.0 * np.sin(np.radians(latitude)))
+        camera = rotate_about(nodded, model.latitude_axis, model.latitude_point, latitude)
+        assert np.allclose(reconstruct.apply_transform(model.camera_to_object(latitude, longitude), camera), points)

@@ -107,7 +107,9 @@ Depth data:
 The **object frame** is the scanner's rectified left-camera frame at latitude
 0, longitude 0: +x right, +y down, +z away from the scanner. The turntable
 axis points close to −y (up through the object). `reconstruct` fits both stage
-axes from the scan itself and writes them to `stage_axes.json` next to each
+axes from the scan itself, plus a nod of the object that grows with
+sin(latitude) (objects on the gel pad tip as the cradle tilts; see the
+`StageModel` docstring), and writes them to `stage_axes.json` next to each
 point cloud. Point clouds are in that frame, in millimeters.
 
 ## Color camera (work in progress)

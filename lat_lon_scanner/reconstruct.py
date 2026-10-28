@@ -13,7 +13,9 @@ Steps:
 2. The two stage axes are fitted in the camera frame by minimizing the
    misalignment between neighboring views once each is rotated back by its
    commanded angles. The object frame is the camera frame at latitude 0,
-   longitude 0.
+   longitude 0. Then a nod of the object that grows with the gravity load,
+   sin(latitude), about a pivot on the turntable axis is fitted (an object on
+   a soft mount tips as the cradle tilts), and the axes are refitted with it.
 3. Optionally (--refine), each view's pose is refined with a joint
    (multiway) ICP that starts from the fitted axes. On the first duck scan the
    fitted axes alone were as good (0.285 vs 0.288 mm misalignment).
@@ -179,49 +181,71 @@ def axis_from_angles(base, tilt_angles):
 
 class StageModel(object):
     """
-    Where the stage's axes are in the camera frame (x right, y down, z away).
+    Where the stage's axes are in the camera frame (x right, y down, z away),
+    and how far the object nods as the cradle tilts.
 
     A point fixed to the object, at p in the object frame (the camera frame at
     latitude 0, longitude 0), appears at
 
-        R_lat(latitude) [R_lon(longitude) (p - lon_point) + lon_point - lat_point] + lat_point
+        R_lat(latitude) [N(latitude) [R_lon(longitude) (p - lon_point) + lon_point - pivot] + pivot - lat_point] + lat_point
 
     The latitude axis is near +x (+latitude tips the top toward the camera) and
     the longitude axis near up, -y (+longitude is counterclockwise from above).
     Parameters: two tilt angles for each axis, the (y, z) of the latitude axis
     where x = reference x, and the (x, z) of the longitude axis where y =
     reference y.
+
+    N(latitude) is the nod: a rotation by nod_gain_degrees * sin(latitude),
+    the same way as the latitude, about a line parallel to the latitude axis
+    through the pivot, a point on the turntable axis nod_pivot_height mm above
+    the rotation center (negative is below). It follows the gravity load as
+    the cradle tilts: on 2026-10-27 the bust, held on its cap by a ~0.5 mm gel
+    pad 28.5 mm below the rotation center, tipped toward the scanner at high
+    latitudes and away at negative ones, 2.5 degrees x sin(latitude) about a
+    pivot 8.5 mm below the center. A nod about one pivot plus a slide toward
+    the scanner looks like a nod about another, so the pivot can't tell the
+    object tipping and sliding on its mount from the cradle yielding.
     """
     latitude_base = np.array([1.0, 0.0, 0.0])
     longitude_base = np.array([0.0, -1.0, 0.0])
 
-    def __init__(self, parameters, reference_point):
+    def __init__(self, parameters, reference_point, nod_gain_degrees = 0.0, nod_pivot_height = 0.0):
         self.parameters = np.asarray(parameters, float)
         self.reference_point = np.asarray(reference_point, float)
         self.latitude_axis = axis_from_angles(self.latitude_base, self.parameters[0:2])
         self.longitude_axis = axis_from_angles(self.longitude_base, self.parameters[2:4])
         self.latitude_point = np.array([self.reference_point[0], self.parameters[4], self.parameters[5]])
         self.longitude_point = np.array([self.parameters[6], self.reference_point[1], self.parameters[7]])
+        self.nod_gain_degrees = float(nod_gain_degrees)
+        self.nod_pivot_height = float(nod_pivot_height)
+        self.nod_pivot = self.closest_points()[1] + self.nod_pivot_height * self.longitude_axis
 
     def camera_to_object(self, latitude, longitude):
         """Return the 4x4 transform taking camera-frame points of a view into the object frame."""
         latitude_rotation = Rotation.from_rotvec(np.radians(latitude) * self.latitude_axis).inv().as_matrix()
         longitude_rotation = Rotation.from_rotvec(np.radians(longitude) * self.longitude_axis).inv().as_matrix()
-        rotation = longitude_rotation @ latitude_rotation
-        translation = (longitude_rotation @ (self.latitude_point - latitude_rotation @ self.latitude_point
-                                             - self.longitude_point) + self.longitude_point)
+        nod_degrees = self.nod_gain_degrees * np.sin(np.radians(latitude))
+        nod_rotation = Rotation.from_rotvec(np.radians(nod_degrees) * self.latitude_axis).inv().as_matrix()
+        rotation = longitude_rotation @ nod_rotation @ latitude_rotation
+        translation = (longitude_rotation @ (nod_rotation @ (self.latitude_point - latitude_rotation @ self.latitude_point
+                                                             - self.nod_pivot) + self.nod_pivot - self.longitude_point)
+                       + self.longitude_point)
         transform = np.eye(4)
         transform[:3, :3] = rotation
         transform[:3, 3] = translation
         return transform
 
-    def rotation_center(self):
-        """Return (the midpoint of the axes' closest approach, the gap between them in mm)."""
+    def closest_points(self):
+        """Return the points where the latitude and longitude axes come closest, on each."""
         normal = np.cross(self.latitude_axis, self.longitude_axis)
         matrix = np.column_stack([self.latitude_axis, -self.longitude_axis, normal])
         along_latitude, along_longitude, _ = np.linalg.solve(matrix, self.longitude_point - self.latitude_point)
-        on_latitude = self.latitude_point + along_latitude * self.latitude_axis
-        on_longitude = self.longitude_point + along_longitude * self.longitude_axis
+        return (self.latitude_point + along_latitude * self.latitude_axis,
+                self.longitude_point + along_longitude * self.longitude_axis)
+
+    def rotation_center(self):
+        """Return (the midpoint of the axes' closest approach, the gap between them in mm)."""
+        on_latitude, on_longitude = self.closest_points()
         return 0.5 * (on_latitude + on_longitude), float(np.linalg.norm(on_latitude - on_longitude))
 
 
@@ -281,24 +305,53 @@ def estimate_center(upright_points):
 
 
 def fit_stage_model(view_points, poses, center_guess, crop_radius):
-    """Fit the StageModel by minimizing the misalignment between neighboring views."""
+    """
+    Fit the StageModel: the axes by minimizing the misalignment between
+    neighboring views, then the nod with views farther apart compared as well,
+    then the axes again with that nod.
+
+    One latitude row's nod barely differs from the next row's, but across
+    several rows it adds up (1-2 mm between the bust's -20 and +50 rows), so
+    the nod is fitted on views up to nod_arc_degrees apart, scored on the
+    closest nod_keep_fraction of each pair's points since far-apart views
+    overlap less. On the bust, this score fell 11% for the nod against 6% for
+    the neighbors-only one.
+    """
+    nod_arc_degrees, nod_keep_fraction = 70.0, 0.4
     pairs = neighbor_pairs(poses)
     parameters = np.array([0, 0, 0, 0, center_guess[1], center_guess[2], center_guess[0], center_guess[2]], float)
-    for voxel_size, keep_fraction in [(1.5, 0.5), (0.8, 0.6)]:
-        clouds = [downsample(points[np.linalg.norm(points - center_guess, axis = 1) < crop_radius], voxel_size)
-                  for points in view_points]
+    nod = np.zeros(2)
 
-        def cost(trial_parameters):
-            model = StageModel(trial_parameters, center_guess)
-            return misalignment([apply_transform(model.camera_to_object(*pose), cloud)
-                                 for cloud, pose in zip(clouds, poses)], pairs, keep_fraction)
+    def place(clouds, trial_parameters, trial_nod):
+        model = StageModel(trial_parameters, center_guess, *trial_nod)
+        return [apply_transform(model.camera_to_object(*pose), cloud) for cloud, pose in zip(clouds, poses)]
 
+    def fit_axes(clouds, keep_fraction, label):
+        cost = lambda trial_parameters: misalignment(place(clouds, trial_parameters, nod), pairs, keep_fraction)
         start_cost = cost(parameters)
         result = scipy.optimize.minimize(cost, parameters, method = "Powell",
                                          options = {"xtol" : 1e-3, "ftol" : 1e-5, "maxfev" : 4000})
-        parameters = result.x
-        print(f"  axes fit at {voxel_size} mm: misalignment {start_cost:.3f} -> {result.fun:.3f} mm", flush = True)
-    return StageModel(parameters, center_guess), float(result.fun)
+        print(f"  {label}: misalignment {start_cost:.3f} -> {result.fun:.3f} mm", flush = True)
+        return result.x, float(result.fun)
+
+    for voxel_size, keep_fraction in [(1.5, 0.5), (0.8, 0.6)]:
+        clouds = [downsample(points[np.linalg.norm(points - center_guess, axis = 1) < crop_radius], voxel_size)
+                  for points in view_points]
+        parameters, fit_misalignment = fit_axes(clouds, keep_fraction, f"axes fit at {voxel_size} mm")
+
+    # The pivot starts halfway down the crop sphere, near where the mount usually is.
+    nod_pairs = neighbor_pairs(poses, nod_arc_degrees)
+    nod_cost = lambda trial_nod: misalignment(place(clouds, parameters, trial_nod), nod_pairs, nod_keep_fraction)
+    start_cost = nod_cost(nod)
+    result = scipy.optimize.minimize(nod_cost, [0.0, -0.5 * crop_radius], method = "Powell",
+                                     bounds = [(-10.0, 10.0), (-crop_radius, crop_radius)],
+                                     options = {"xtol" : 1e-2, "ftol" : 1e-5, "maxfev" : 300})
+    nod = result.x
+    print(f"  nod fit on views up to {nod_arc_degrees:.0f} degrees apart: misalignment {start_cost:.3f} -> {result.fun:.3f} mm, "
+          f"nod {nod[0]:+.2f} degrees x sin(latitude) about a pivot {nod[1]:+.1f} mm along the turntable axis "
+          f"from the rotation center", flush = True)
+    parameters, fit_misalignment = fit_axes(clouds, keep_fraction, "axes refit with the nod")
+    return StageModel(parameters, center_guess, *nod), fit_misalignment
 
 
 def refine_poses(object_clouds, poses, voxel_size = 0.8, maximum_distance = 1.0):
@@ -550,6 +603,8 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     axes_record = {"latitude_axis" : model.latitude_axis.tolist(), "latitude_point" : model.latitude_point.tolist(),
                    "longitude_axis" : model.longitude_axis.tolist(), "longitude_point" : model.longitude_point.tolist(),
                    "rotation_center" : center.tolist(), "axis_gap_millimeters" : axis_gap,
+                   "nod_gain_degrees" : model.nod_gain_degrees, "nod_pivot_height_millimeters" : model.nod_pivot_height,
+                   "nod_pivot" : model.nod_pivot.tolist(),
                    "fit_misalignment_millimeters" : fit_misalignment,
                    "misalignment_before_refinement_millimeters" : before,
                    "misalignment_after_refinement_millimeters" : after,

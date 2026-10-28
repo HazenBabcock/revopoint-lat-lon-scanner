@@ -82,6 +82,16 @@ post and cap it sits on are found as a stack of cylinders on the turntable axis
 and cut away. Red and yellow surfaces reflect little of the scanner's blue
 light, so expect holes there (the duck's beak).
 
+An object on a soft mount also tips as the cradle tilts. The bust, held on its
+cap by a gel pad about 0.5 mm thick, leaned toward the scanner at high
+latitudes and away at negative ones, which left its head in layers 1–2 mm
+apart. So after the axes, the reconstruction fits a nod that grows with the
+gravity load, gain × sin(latitude), about a pivot on the turntable axis, and
+then refits the axes with it. For the bust the nod came out 2.5° at latitude 90,
+and the misalignment of views up to 70° apart fell from 0.53 to 0.46 mm; for
+the duck it was 0.5°, with little effect. Fitting the nod doubles the
+reconstruction time (42 minutes for the bust's 88 views).
+
 ### Filling in a dark area
 
 A dark area, such as the duck's red beak, keeps getting depth at longer
