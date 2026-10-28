@@ -1,6 +1,8 @@
 """Tests for lat_lon_scanner.reconstruct."""
 import numpy as np
+import pytest
 
+import lat_lon_scanner.capture as capture
 import lat_lon_scanner.reconstruct as reconstruct
 
 
@@ -44,6 +46,16 @@ def test_merge_ignores_the_stale_frame():
     assert np.all(np.isnan(merged[:, 451:510]))
 
 
+def test_upright_view_without_a_latitude_0_row():
+    # The 20 degree plan (2026-10-27 bust) has rows at 10 and -10 but none at 0.
+    poses = capture.scan_plan((90, 70, 50, 30, 10, -10, -20), 20)
+    assert (0.0, 0.0) not in poses
+    assert poses[reconstruct.nearest_upright_view(poses)] == (10.0, 0.0)
+    # With a latitude 0 row, the view at exactly (0, 0) is the one used.
+    poses = capture.scan_plan()
+    assert poses[reconstruct.nearest_upright_view(poses)] == (0.0, 0.0)
+
+
 def test_depth_band_follows_the_scanner():
     # With the scanner farther back, the band moves out with it: a band that
     # starts beyond the synthetic surface (raw ~21000-23000) leaves no depth,
@@ -57,3 +69,40 @@ def test_depth_band_follows_the_scanner():
     covering = reconstruct.merge_exposures(view_data, [12000], depth_band_raw = (20000, 45000))
     assert np.array_equal(np.isnan(default), np.isnan(covering))
     assert np.nanmax(np.abs(default - covering)) == 0
+
+
+def mount_and_box(random_generator):
+    """
+    Surface points of a mount (a radius 5 mm post from 40 to 30 mm below the
+    origin, then a radius 8 mm cap up to 28.5 mm below) on the z axis, with a
+    box-shaped object on top. Returns (points, number of mount points).
+    """
+    def cylinder(radius, bottom, top, count):
+        angles = random_generator.uniform(0, 2 * np.pi, count)
+        radii = radius + random_generator.normal(0, 0.1, count)
+        return np.column_stack([radii * np.cos(angles), radii * np.sin(angles), random_generator.uniform(bottom, top, count)])
+
+    mount = np.concatenate([cylinder(5.0, -40.0, -30.0, 20000), cylinder(8.0, -30.0, -28.5, 5000)])
+    # The box's four walls, 30 x 20 mm, from the cap up.
+    count = 50000
+    position = random_generator.uniform(-1, 1, count)
+    wall = random_generator.integers(0, 4, count)
+    x = np.where(wall < 2, np.where(wall == 0, -15.0, 15.0), 15.0 * position)
+    y = np.where(wall < 2, 10.0 * position, np.where(wall == 2, -10.0, 10.0))
+    box = np.column_stack([x, y, random_generator.uniform(-28.5, 15.0, count)])
+    return np.concatenate([mount, box]), len(mount)
+
+
+def test_mount_is_measured_from_the_turntable_axis():
+    # 2026-10-27 bust: the rotation center was 0.79 mm off the turntable axis.
+    # Measured from there, the post's slices spread 1.5-1.7 mm, too much to
+    # count as a cylinder, and no mount was found.
+    points, mount_count = mount_and_box(np.random.default_rng(5))
+    up = np.array([0.0, 0.0, 1.0])
+    keep, mount_top, mount_radius = reconstruct.remove_mount(points, np.zeros(3), up)
+    assert mount_top == pytest.approx(-28.5)
+    assert 8.0 < mount_radius < 9.5
+    assert not keep[:mount_count].any()
+    assert keep[mount_count:].all()
+    with pytest.raises(RuntimeError):
+        reconstruct.remove_mount(points, np.array([0.8, 0.0, 0.0]), up)

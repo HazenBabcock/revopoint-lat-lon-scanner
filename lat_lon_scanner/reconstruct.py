@@ -241,6 +241,16 @@ def neighbor_pairs(poses, maximum_arc_degrees = 40.0):
     return [(i, j) for i in range(len(poses)) for j in range(len(poses)) if i != j and arcs[i, j] <= maximum_arc_degrees]
 
 
+def nearest_upright_view(poses):
+    """
+    Index of the view nearest latitude 0, longitude 0 (the first one if several
+    are equally near). Scan plans without a latitude 0 row, such as the 20
+    degree plan's 10 and -10 rows, have no view at exactly (0, 0).
+    """
+    upright = view_direction(0.0, 0.0)
+    return int(np.argmax([view_direction(*pose) @ upright for pose in poses]))
+
+
 def downsample(points, voxel_size):
     cloud = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(points))
     return np.asarray(cloud.voxel_down_sample(voxel_size).points)
@@ -259,8 +269,9 @@ def misalignment(object_clouds, pairs, keep_fraction, cap_millimeters = 5.0):
 
 def estimate_center(upright_points):
     """
-    Rough rotation center from the latitude 0, longitude 0 view: the largest
-    cluster's middle, pushed back by half its width since only its front is seen.
+    Rough rotation center from the view at (or nearest) latitude 0, longitude
+    0: the largest cluster's middle, pushed back by half its width since only
+    its front is seen.
     """
     cloud = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(upright_points)).voxel_down_sample(0.7)
     labels = np.array(cloud.cluster_dbscan(eps = 2.0, min_points = 10))
@@ -321,10 +332,12 @@ def refine_poses(object_clouds, poses, voxel_size = 0.8, maximum_distance = 1.0)
     return [np.array(node.pose) for node in pose_graph.nodes]
 
 
-def remove_mount(points, center, up, slice_millimeters = 0.5):
+def remove_mount(points, axis_point, up, slice_millimeters = 0.5):
     """
     Return (mask keeping the object, mount top height, mount radius) to drop
-    the post and cap the object sits on.
+    the post and cap the object sits on. axis_point is the point on the
+    turntable axis level with the rotation center; heights are measured from it
+    along up.
 
     The mount is a stack of cylinders on the turntable axis, and a slice through
     a cylinder wall puts every point at nearly the same distance from the axis,
@@ -335,8 +348,8 @@ def remove_mount(points, center, up, slice_millimeters = 0.5):
     Everything well below that is dropped, and just above it anything inside
     the mount's radius.
     """
-    height = (points - center) @ up
-    radial = np.linalg.norm((points - center) - np.outer(height, up), axis = 1)
+    height = (points - axis_point) @ up
+    radial = np.linalg.norm((points - axis_point) - np.outer(height, up), axis = 1)
     slice_bottoms = np.arange(np.floor(height.min()), 0.0, slice_millimeters)
     spreads, outer_radii = [], []
     for bottom in slice_bottoms:
@@ -471,8 +484,9 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     poses, view_points, view_normals, view_brightness = load_run_views(run_directory, depth_band_raw)
     print(f"{len(poses)} views loaded, {sum(len(p) for p in view_points)} points, {time.monotonic() - start:.0f} s", flush = True)
 
-    upright_index = poses.index((0.0, 0.0))
+    upright_index = nearest_upright_view(poses)
     center_guess = estimate_center(view_points[upright_index])
+    print(f"  first rotation center guess from the view at {poses[upright_index]}", flush = True)
     model, fit_misalignment = fit_stage_model(view_points, poses, center_guess, crop_radius)
     center, axis_gap = model.rotation_center()
     print(f"  rotation center {center.round(2)} mm, axes {axis_gap:.2f} mm apart", flush = True)
@@ -508,8 +522,13 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     normals = np.concatenate([normals[mask] @ transform[:3, :3].T
                               for normals, mask, transform in zip(view_normals, near_center, transforms)])
     brightness = np.concatenate([values[mask] for values, mask in zip(view_brightness, near_center)])
+    # Measure the mount from the turntable axis, not the rotation center: the
+    # center sits midway between the axes, so it is off the turntable axis by
+    # half their gap (0.79 mm for the 2026-10-27 bust), enough to make the post
+    # look out of round.
     up = model.longitude_axis
-    keep, mount_top, mount_radius = remove_mount(points, center, up)
+    axis_point = model.longitude_point + ((center - model.longitude_point) @ up) * up
+    keep, mount_top, mount_radius = remove_mount(points, axis_point, up)
     print(f"  mount cut away: top {mount_top:.1f} mm along the turntable axis from the rotation center, "
           f"radius {mount_radius:.1f} mm", flush = True)
 
