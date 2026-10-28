@@ -51,6 +51,13 @@ depth_band_raw = (15000, 40000)
 # Drop pixels where exposures disagree by more than ~1 mm.
 exposure_disagreement_raw = 200
 
+# A frame is left out of its capture if more than these fractions of its
+# pixels are missing from the other frames, or differ from them by more than
+# ~0.25 mm (see consistent_frames).
+frame_disagreement_raw = 50
+frame_unique_fraction_limit = 0.10
+frame_disagreement_fraction_limit = 0.15
+
 # The exposure whose left image supplies each point's brightness: long enough
 # for the duck's yellow, short enough not to saturate most surfaces.
 brightness_exposure = 24000
@@ -76,13 +83,53 @@ def read_rectified_camera_matrix(path):
     return camera_matrix / camera_matrix[2, 2]
 
 
+def consistent_frames(frames):
+    """
+    Return the indices of the depth frames that agree with the rest of their
+    capture. The scanner occasionally delivers a frame left over from its
+    previous stream as the first frame, which after a stage move shows the
+    object at the previous pose; merged in, it leaves curved sheets off the
+    surface. Such a frame has many pixels the other frames lack, or that
+    disagree with them, where real frames match to a few raw units. On the
+    2026-10-27 duck scans the two stale frames scored 48-56% unique pixels
+    against at most 1.3% for the other 550 frames. Needs three or more frames;
+    with fewer, all are kept.
+    """
+    depth = frames.astype(float)
+    depth[(depth < depth_band_raw[0]) | (depth > depth_band_raw[1])] = np.nan
+    if len(depth) < 3:
+        return np.arange(len(depth))
+    kept = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for index in range(len(depth)):
+            valid = np.isfinite(depth[index])
+            if not valid.any():
+                continue
+            others = np.nanmedian(np.delete(depth, index, axis = 0), axis = 0)
+            unique = np.mean(np.isnan(others[valid]))
+            overlap = valid & np.isfinite(others)
+            disagreeing = (np.mean(np.abs(depth[index][overlap] - others[overlap]) > frame_disagreement_raw)
+                           if overlap.any() else 1.0)
+            if (unique <= frame_unique_fraction_limit) and (disagreeing <= frame_disagreement_fraction_limit):
+                kept.append(index)
+    return np.array(kept, dtype = int)
+
+
 def merge_exposures(view_data, exposures):
-    """Return one depth map (raw units, NaN where invalid) from all exposures and frames of a view."""
+    """
+    Return one depth map (raw units, NaN where invalid) from all exposures and
+    frames of a view, leaving out frames that disagree with the rest of their
+    capture (see consistent_frames).
+    """
     per_exposure = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         for exposure in exposures:
-            frames = view_data[f"depth_{exposure}"].astype(float)
+            frames = view_data[f"depth_{exposure}"]
+            frames = frames[consistent_frames(frames)].astype(float)
+            if len(frames) == 0:
+                continue
             frames[(frames < depth_band_raw[0]) | (frames > depth_band_raw[1])] = np.nan
             per_exposure.append(np.nanmedian(frames, axis = 0))
         stack = np.array(per_exposure)

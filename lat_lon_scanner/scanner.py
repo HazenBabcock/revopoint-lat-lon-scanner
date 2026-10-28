@@ -25,6 +25,12 @@ resting_exposure = 12000
 # past 65535 (~318 mm), so anything farther reads as very near.
 depth_unit_millimeters = 0.004851
 
+# Frames thrown away at the start of every capture. The scanner occasionally
+# delivers a frame left over from its previous stream first, which after a
+# stage move shows the object at the previous pose (2 of 40 moves on the
+# 2026-10-27 duck scan).
+leading_frames_discarded = 1
+
 # Per-camera calibration (intrinsics, distortion, rectification) on the scanner.
 calibration_paths = ("/data/camparam/mapparamL.bin", "/data/camparam/mapparamR.bin")
 
@@ -37,7 +43,8 @@ class Scanner(object):
 
     def capture_exposures(self, exposures = default_exposures, frames_per_exposure = 4):
         """
-        Capture frames_per_exposure depth frames at each exposure.
+        Capture frames_per_exposure depth frames at each exposure, after
+        discarding the stream's first leading_frames_discarded frames.
 
         Returns {exposure: {"depth": (frames, 400, 640) uint16,
                             "mono": (800, 640) uint8}}, where "mono" is the
@@ -52,11 +59,12 @@ class Scanner(object):
         try:
             for exposure in exposures:
                 self.revopoint.set_exposure(exposure)
-                images = self.revopoint.get_images(frames_per_exposure)
+                requested = frames_per_exposure + leading_frames_discarded
+                images = self.revopoint.get_images(requested)
                 self._close_streams()
-                if len(images["depth"]) != frames_per_exposure:
-                    raise RuntimeError(f"Got {len(images['depth'])} of {frames_per_exposure} frames at exposure {exposure}")
-                captures[exposure] = {"depth" : np.array(images["depth"]),
+                if len(images["depth"]) != requested:
+                    raise RuntimeError(f"Got {len(images['depth'])} of {requested} frames at exposure {exposure}")
+                captures[exposure] = {"depth" : np.array(images["depth"][leading_frames_discarded:]),
                                       "mono" : np.array(images["other"][-1])}
         finally:
             try:

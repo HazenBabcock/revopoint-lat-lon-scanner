@@ -15,6 +15,7 @@ dependencies = ["numpy", "pyserial", "requests"]
 
 [project.optional-dependencies]
 reconstruct = ["open3d", "scipy"]
+test = ["pytest"]
 
 [tool.setuptools]
 packages = ["lat_lon_scanner"]

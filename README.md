@@ -76,6 +76,12 @@ the duck, 20 views around the beak took 3 minutes, lined up with the main scan
 as well as its own views do (about 0.1 mm), and nearly doubled the points
 within 5 mm of the beak's center.
 
+## Tests
+
+```bash
+python -m pytest tests
+```
+
 ## Stage conventions
 
 Positions are in degrees. Zero is the cradle upright (turntable axis vertical),
