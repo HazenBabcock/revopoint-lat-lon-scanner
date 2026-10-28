@@ -5,13 +5,12 @@ Open `assembly.FCStd` for the whole stage.
 
 Some parts are models from other sources that can't be redistributed here (see
 [Missing parts](#missing-parts)), so FreeCAD opens the assemblies without them.
-The renders below include them.
+The renders below include them, apart from the example object.
 
 ![The stage seen from the scanner's end](images/assembly_front.png)
 
-From the scanner's end: the scanner faces the object on the turntable, which
-rides in the tilting cradle between the latitude motor and the pivot opposite
-it.
+From the scanner's end: the scanner faces the turntable, which rides in the
+tilting cradle between the latitude motor and the pivot opposite it.
 
 ![The stage seen from the opposite corner](images/assembly_back.png)
 
