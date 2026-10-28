@@ -4,6 +4,13 @@ A two-axis stage that turns an object in front of a fixed Revopoint MINI 3D
 scanner: a turntable (longitude) carried on a tilting cradle (latitude). Both
 axes are stepper motors driven by a BigTreeTech SKR Mini E3 V3.0.
 
+![The stage with a rubber duck on the turntable, and a mesh of the duck from its scan](images/overview.jpg)
+
+Left: the stage, with the scanner in front and a rubber duck on the turntable.
+Right: a mesh of the duck, made from its scanned point cloud
+([`examples/duck_point_cloud.ply`](examples/duck_point_cloud.ply)) with Open3D's
+Poisson surface reconstruction.
+
 - [`firmware/`](firmware/) - Marlin configuration and build script for the
   board, which then takes G-code over USB. Licensed separately under the GPLv3.
 - [`lat_lon_scanner/`](lat_lon_scanner/) - Python package that drives the stage
