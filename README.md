@@ -17,6 +17,7 @@ Poisson surface reconstruction.
   and the scanner.
 - [`cad/`](cad/) - FreeCAD models of the stage, the DXF and STL files sent out
   for fabrication, and the bill of materials.
+- [`examples/`](examples/) - some example scans, as point clouds.
 
 ## Requirements
 
