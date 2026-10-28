@@ -31,10 +31,10 @@ From the opposite corner, with the control board in front.
 
 ## Parts
 
-| File | Exported to |
-|---|---|
-| `base_plate.FCStd`, `lat_lon_plate.FCStd`, `scanner_mount_plate.FCStd` | DXF, `exports/2026-10-11_ponoko/` |
-| `counter_weight_clamp.FCStd`, `lat_stepper_arm.FCStd` (stepper arm and idle arm), `lon_plate.FCStd`, `stepper_lat_mount.FCStd`, `stepper_lon_mount.FCStd` | STL, `exports/2026-10-11_xometry/` |
+| File | Exported to | Made as |
+|---|---|---|
+| `base_plate.FCStd`, `lat_lon_plate.FCStd`, `scanner_mount_plate.FCStd` | DXF, `exports/parts_2D_DXF/` | Ponoko - 6.7mm Amber Bamboo Plywood - Laser Cutting |
+| `counter_weight_clamp.FCStd`, `lat_stepper_arm.FCStd` (stepper arm and idle arm), `lon_plate.FCStd`, `stepper_lat_mount.FCStd`, `stepper_lon_mount.FCStd` | STL, `exports/parts_3D_STL/` | Xometry - Nylon 12, White, Color: As Printed, Off White (Natural) |
 
 The counterweights aren't modeled. Each of the two counterweight clamps holds a
 piece of 1/2" x 1/2" copper bar about 1.25" (32 mm) long. Both pieces are cut
