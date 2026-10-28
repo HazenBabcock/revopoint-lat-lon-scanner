@@ -42,3 +42,18 @@ def test_merge_ignores_the_stale_frame():
     merged = reconstruct.merge_exposures(view_data, [12000, 24000])
     # Where only the stale frame saw anything (it is shifted right), there must be no depth.
     assert np.all(np.isnan(merged[:, 451:510]))
+
+
+def test_depth_band_follows_the_scanner():
+    # With the scanner farther back, the band moves out with it: a band that
+    # starts beyond the synthetic surface (raw ~21000-23000) leaves no depth,
+    # and one that covers it keeps the same depth as the default band.
+    random_generator = np.random.default_rng(4)
+    frames = np.array([synthetic_frames(random_generator) for _ in range(3)]).astype(np.uint16)
+    view_data = {"depth_12000" : frames}
+    beyond = reconstruct.merge_exposures(view_data, [12000], depth_band_raw = (25000, 45000))
+    assert np.all(np.isnan(beyond))
+    default = reconstruct.merge_exposures(view_data, [12000])
+    covering = reconstruct.merge_exposures(view_data, [12000], depth_band_raw = (20000, 45000))
+    assert np.array_equal(np.isnan(default), np.isnan(covering))
+    assert np.nanmax(np.abs(default - covering)) == 0

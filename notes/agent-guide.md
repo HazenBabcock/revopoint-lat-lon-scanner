@@ -94,9 +94,13 @@ Depth data:
   (`scanner.depth_unit_millimeters`), measured by sliding the scanner a known
   distance along its mount. The scanner's own `/oem/depth_scale` holds 200
   counts per mm (5.0 µm), 3% different. Which is right hasn't been settled.
-- Valid depth for this setup is raw 15000–40000 (73–194 mm). Values wrap past
-  65535 (about 318 mm), so anything farther reads as very near. Always apply
-  the band.
+- **The valid depth band depends on where the scanner sits** in its 55.85 mm
+  mount slot. At the front (rotation center about 120 mm away) it is raw
+  15000–40000, 73–194 mm, the `reconstruct` default. At the back (about
+  176 mm) use `--depth-range 100 215`. Values wrap past 65535 (about 318 mm),
+  so anything farther reads as very near; always apply a band. Ask the human
+  where the scanner is when it matters; it can't be seen remotely. Size
+  `--crop-radius` to the object (32 mm suits the duck).
 
 ## Coordinates
 

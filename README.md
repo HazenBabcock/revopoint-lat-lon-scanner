@@ -102,6 +102,25 @@ the duck, 20 views around the beak took 3 minutes, lined up with the main scan
 as well as its own views do (about 0.1 mm), and nearly doubled the points
 within 5 mm of the beak's center.
 
+### Larger objects
+
+The duck was scanned with the scanner at the front of its mount slot, which
+puts the rotation center about 120 mm away; there the view is only about
+54 mm tall. For a larger object, slide the scanner back along the slot. At the
+back the rotation center is about 176 mm away, the view about 79 mm tall, and
+a bust about 70 mm tall fit at every pose from latitude −20 to +90. The
+scanner's working distance is 100–200 mm.
+
+The reconstruction defaults are set for the duck, so give it the new distances:
+
+```bash
+python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/bust --depth-range 100 215 --crop-radius 55
+```
+
+`--depth-range` keeps depth readings between those distances from the scanner,
+in mm (default 73–194). `--crop-radius` keeps points within that distance of
+the rotation center, in mm (default 32).
+
 ## Tests
 
 ```bash

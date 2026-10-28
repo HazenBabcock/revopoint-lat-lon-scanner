@@ -45,8 +45,10 @@ from scipy.spatial.transform import Rotation
 
 import lat_lon_scanner.scanner as scanner_module
 
-# Depth outside 73-194 mm is the wall, wrapped values or noise.
-depth_band_raw = (15000, 40000)
+# Depth outside 73-194 mm is the wall, wrapped values or noise, with the
+# scanner at the front of its mount slot (rotation center ~120 mm away). With
+# it farther back, pass a band that follows it (--depth-range).
+default_depth_band_raw = (15000, 40000)
 
 # Drop pixels where exposures disagree by more than ~1 mm.
 exposure_disagreement_raw = 200
@@ -83,7 +85,7 @@ def read_rectified_camera_matrix(path):
     return camera_matrix / camera_matrix[2, 2]
 
 
-def consistent_frames(frames):
+def consistent_frames(frames, depth_band_raw = default_depth_band_raw):
     """
     Return the indices of the depth frames that agree with the rest of their
     capture. The scanner occasionally delivers a frame left over from its
@@ -116,22 +118,25 @@ def consistent_frames(frames):
     return np.array(kept, dtype = int)
 
 
-def merge_exposures(view_data, exposures):
+def merge_exposures(view_data, exposures, depth_band_raw = default_depth_band_raw):
     """
-    Return one depth map (raw units, NaN where invalid) from all exposures and
-    frames of a view, leaving out frames that disagree with the rest of their
-    capture (see consistent_frames).
+    Return one depth map (raw units, NaN where invalid or outside
+    depth_band_raw) from all exposures and frames of a view, leaving out frames
+    that disagree with the rest of their capture (see consistent_frames).
     """
     per_exposure = []
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         for exposure in exposures:
             frames = view_data[f"depth_{exposure}"]
-            frames = frames[consistent_frames(frames)].astype(float)
+            frames = frames[consistent_frames(frames, depth_band_raw)].astype(float)
             if len(frames) == 0:
                 continue
             frames[(frames < depth_band_raw[0]) | (frames > depth_band_raw[1])] = np.nan
             per_exposure.append(np.nanmedian(frames, axis = 0))
+        if not per_exposure:
+            # Nothing in the band at any exposure (e.g. the object is out of range).
+            return np.full(view_data[f"depth_{exposures[0]}"].shape[1:], np.nan)
         stack = np.array(per_exposure)
         merged = np.nanmedian(stack, axis = 0)
         spread = np.nanmax(stack, axis = 0) - np.nanmin(stack, axis = 0)
@@ -420,7 +425,7 @@ def render_preview(points, normals, colors, eye_direction, up_hint, image_size =
     return (255 * image).astype(np.uint8)
 
 
-def load_run_views(run_directory):
+def load_run_views(run_directory, depth_band_raw = default_depth_band_raw):
     """
     Return (poses, points, normals, brightness) for each view of a run, in the
     camera frame, with edge pixels and edge-on surfaces already dropped.
@@ -435,7 +440,7 @@ def load_run_views(run_directory):
     view_points, view_normals, view_brightness = [], [], []
     for view_index in range(len(poses)):
         view_data = np.load(run_directory / f"view_{view_index:03d}.npz")
-        depth = remove_depth_edges(merge_exposures(view_data, information["exposures"]))
+        depth = remove_depth_edges(merge_exposures(view_data, information["exposures"], depth_band_raw))
         points, rows, columns = depth_to_points(depth, camera_matrix)
         # Normals in the camera frame, facing the camera that saw them.
         cloud = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(points))
@@ -451,7 +456,7 @@ def load_run_views(run_directory):
 
 
 def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, voxel_size = default_voxel_millimeters,
-                refine = False, extra_runs = (), output_name = "reconstruction"):
+                refine = False, extra_runs = (), output_name = "reconstruction", depth_band_raw = default_depth_band_raw):
     """
     Reconstruct the object from run_directory. The stage axes are fitted from
     that run alone; views from extra_runs (taken without moving the scanner or
@@ -463,7 +468,7 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     camera_matrix = read_rectified_camera_matrix(run_directory / "calibration" / "mapparamL.bin")
 
     start = time.monotonic()
-    poses, view_points, view_normals, view_brightness = load_run_views(run_directory)
+    poses, view_points, view_normals, view_brightness = load_run_views(run_directory, depth_band_raw)
     print(f"{len(poses)} views loaded, {sum(len(p) for p in view_points)} points, {time.monotonic() - start:.0f} s", flush = True)
 
     upright_index = poses.index((0.0, 0.0))
@@ -488,7 +493,7 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
         after = before
 
     for extra_run in extra_runs:
-        extra_poses, extra_points, extra_normals, extra_brightness = load_run_views(extra_run)
+        extra_poses, extra_points, extra_normals, extra_brightness = load_run_views(extra_run, depth_band_raw)
         extra_transforms = [model.camera_to_object(*pose) for pose in extra_poses]
         extra_near = [np.linalg.norm(points - center, axis = 1) < crop_radius for points in extra_points]
         object_clouds += [apply_transform(transform, points[mask])
@@ -531,6 +536,7 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
                    "misalignment_after_refinement_millimeters" : after,
                    "mount_top_millimeters" : mount_top, "mount_radius_millimeters" : mount_radius,
                    "crop_radius_millimeters" : crop_radius, "voxel_millimeters" : voxel_size,
+                   "depth_band_millimeters" : [raw * scanner_module.depth_unit_millimeters for raw in depth_band_raw],
                    "camera_matrix" : camera_matrix.tolist(), "point_count" : len(final_points),
                    "extra_runs" : [str(extra_run) for extra_run in extra_runs]}
     (output_directory / "stage_axes.json").write_text(json.dumps(axes_record, indent = 2))
@@ -560,7 +566,13 @@ def main():
     parser = argparse.ArgumentParser(description = "Build a point cloud from a lat/lon scan run.")
     parser.add_argument("run_directory", type = pathlib.Path)
     parser.add_argument("--crop-radius", type = float, default = default_crop_radius_millimeters,
-                        help = "Keep points within this distance (mm) of the rotation center (default %(default)s).")
+                        help = "Keep points within this distance (mm) of the rotation center (default %(default)s, "
+                               "for an object the size of the example duck).")
+    parser.add_argument("--depth-range", type = float, nargs = 2, metavar = ("NEAREST", "FARTHEST"), default = None,
+                        help = "Keep depth readings between these distances from the scanner, in mm (default "
+                               f"{default_depth_band_raw[0] * scanner_module.depth_unit_millimeters:.0f}-"
+                               f"{default_depth_band_raw[1] * scanner_module.depth_unit_millimeters:.0f}, "
+                               "for the scanner at the front of its mount slot).")
     parser.add_argument("--voxel", type = float, default = default_voxel_millimeters,
                         help = "Output point spacing in mm (default %(default)s).")
     parser.add_argument("--refine", action = "store_true",
@@ -571,8 +583,11 @@ def main():
     parser.add_argument("--output-name", default = "reconstruction",
                         help = "Output directory inside the run (default %(default)s).")
     arguments = parser.parse_args()
+    depth_band_raw = default_depth_band_raw
+    if arguments.depth_range is not None:
+        depth_band_raw = tuple(distance / scanner_module.depth_unit_millimeters for distance in arguments.depth_range)
     reconstruct(arguments.run_directory, arguments.crop_radius, arguments.voxel, refine = arguments.refine,
-                extra_runs = arguments.extra_runs, output_name = arguments.output_name)
+                extra_runs = arguments.extra_runs, output_name = arguments.output_name, depth_band_raw = depth_band_raw)
 
 
 if __name__ == "__main__":
