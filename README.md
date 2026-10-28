@@ -18,6 +18,7 @@ Poisson surface reconstruction.
 - [`cad/`](cad/) - FreeCAD models of the stage, the DXF and STL files sent out
   for fabrication, and the bill of materials.
 - [`examples/`](examples/) - some example scans, as point clouds.
+- [`notes/agent-guide.md`](notes/agent-guide.md) - a guide for AI agents working with this repository.
 
 ## Requirements
 
