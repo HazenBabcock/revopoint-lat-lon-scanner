@@ -164,28 +164,82 @@ def plane(x_range, y_range, z, spacing):
 
 
 def test_color_camera_occlusion():
-    # The color camera sits 15 mm to the right of the left camera, so it sees
-    # part of the wall that a nearer square hides from it but not from the
-    # left camera. Those wall points must get no color, the rest the frame's.
+    # The color camera sits 15 mm to the right of the left camera, so a nearer
+    # square hides a different part of the wall from it. Those wall points must
+    # get no color, the rest the frame's, and a point facing away gets none.
     color_camera = {"matrix" : np.array([[1000.0, 0, 640], [0, 1000.0, 400], [0, 0, 1]]), "distortion" : np.zeros(5),
                     "rotation" : np.eye(3), "translation" : np.array([-15.0, 0, 0])}
     square = plane((-5, 5), (-5, 5), 100.0, 0.15)
     wall = plane((-30, 30), (-20, 20), 150.0, 0.2)
-    # Only the wall the left camera sees (the square hides |x|, |y| < 7.5 from it).
-    wall = wall[(np.abs(wall[:, 0]) >= 7.5) | (np.abs(wall[:, 1]) >= 7.5)]
     points = np.concatenate([square, wall])
+    normals = np.tile([0.0, 0.0, -1.0], (len(points), 1))
+    normals[-1] = [0.0, 0.0, 1.0]
     frame = np.full((800, 1280, 3), 128, np.uint8)
-    colors = reconstruct.view_colors(points, frame, color_camera)
+    colors, facing = reconstruct.view_colors(points, normals, frame, color_camera, spacing_millimeters = 0.2)
     seen = ~np.isnan(colors[:, 0])
     wall_seen = seen[len(square):]
     # Seen from the color camera, the square hides the wall at -15 < x < 0, |y| < 7.5.
-    hidden = (wall[:, 0] > -13) & (wall[:, 0] < -9.5) & (np.abs(wall[:, 1]) < 6)
+    hidden = (wall[:, 0] > -13) & (wall[:, 0] < -2) & (np.abs(wall[:, 1]) < 6)
+    # The left camera can't see the wall at 0 < x < 7.5 behind the square, but the color camera can.
+    behind_square_from_the_left = (wall[:, 0] > 2) & (wall[:, 0] < 6) & (np.abs(wall[:, 1]) < 6)
     far_away = np.abs(wall[:, 0]) > 20
+    far_away[-1] = False
     assert not wall_seen[hidden].any()
+    assert wall_seen[behind_square_from_the_left].all()
     assert wall_seen[far_away].all()
+    assert not seen[-1] and facing[-1] < 0
     assert seen[:len(square)].all()
     expected = reconstruct.srgb_to_linear(np.full(3, 128 / 255)) @ reconstruct.color_camera_to_linear_srgb
     assert np.allclose(colors[seen], expected)
+
+
+def test_photo_colors_weight_frames_by_facing():
+    # A square seen head-on in one view (frame value 100) and turned 60 degrees
+    # in another (frame value 200): its center takes the mean of the two colors,
+    # weighted 1 and cos(60) = 0.5.
+    color_camera = {"matrix" : np.array([[1000.0, 0, 640], [0, 1000.0, 400], [0, 0, 1]]), "distortion" : np.zeros(5),
+                    "rotation" : np.eye(3), "translation" : np.zeros(3)}
+    square = plane((-5, 5.01), (-5, 5.01), 100.0, 0.1)
+    normals = np.tile([0.0, 0.0, -1.0], (len(square), 1))
+    turned = np.eye(4)
+    turned[:3, :3] = Rotation.from_euler("y", 60, degrees = True).as_matrix()
+    turned[:3, 3] = np.array([0.0, 0.0, 100.0]) - turned[:3, :3] @ np.array([0.0, 0.0, 100.0])
+    color_views = [(np.eye(4), np.full((800, 1280, 3), 100, np.uint8), color_camera),
+                   (np.linalg.inv(turned), np.full((800, 1280, 3), 200, np.uint8), color_camera)]
+    colors, frame_counts = reconstruct.photo_colors(square, normals, color_views)
+    center = np.argmin(np.linalg.norm(square - [0.0, 0.0, 100.0], axis = 1))
+    head_on, at_60 = (reconstruct.srgb_to_linear(np.full(3, value / 255)) @ reconstruct.color_camera_to_linear_srgb
+                      for value in (100, 200))
+    assert frame_counts[center] == 2
+    assert np.allclose(colors[center], (head_on + 0.5 * at_60) / 1.5)
+
+
+def test_mesh_bridges_small_holes_and_trims_large_ones():
+    # A sphere of points with a hole 1.6 mm across, like those left on the
+    # duck's beak (no part of them more than 1 mm from a point), and one 16 mm
+    # across, like where the mount is cut away. The mesh must cover the small
+    # hole, leave most of the large one open, and stay on the sphere.
+    radius, count = 15.0, 30000
+    golden_angle = np.pi * (3 - np.sqrt(5))
+    heights = 1 - 2 * (np.arange(count) + 0.5) / count
+    directions = np.column_stack([np.sqrt(1 - heights ** 2) * np.cos(golden_angle * np.arange(count)),
+                                  np.sqrt(1 - heights ** 2) * np.sin(golden_angle * np.arange(count)), heights])
+    small_hole, large_hole = np.array([1.0, 0.0, 0.0]), np.array([0.0, 0.0, -1.0])
+
+    def within(points, direction, distance):
+        return np.arccos(np.clip(points @ direction / np.linalg.norm(points, axis = 1), -1, 1)) * radius < distance
+
+    keep = ~within(directions, small_hole, 0.8) & ~within(directions, large_hole, 8.0)
+    cloud = reconstruct.open3d.geometry.PointCloud(reconstruct.open3d.utility.Vector3dVector(radius * directions[keep]))
+    cloud.normals = reconstruct.open3d.utility.Vector3dVector(directions[keep])
+    mesh, _ = reconstruct.build_mesh(cloud, voxel_size = 0.3)
+    vertices = np.asarray(mesh.vertices)
+    assert within(vertices, small_hole, 0.4).sum() >= 3
+    assert not within(vertices, large_hole, 6.0).any()
+    error = np.abs(np.linalg.norm(vertices, axis = 1) - radius)
+    assert error[~within(vertices, large_hole, 9.0)].max() < 0.05
+    # The free edge left around the opening curls a little (0.15 mm here).
+    assert error.max() < 0.25
 
 
 def test_color_projection_matches_opencv():

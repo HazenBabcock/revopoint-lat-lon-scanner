@@ -73,7 +73,9 @@ python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/duck
 This needs the `reconstruct` extras (Open3D, SciPy) and writes
 `reconstruction/` inside the run: `point_cloud.ply` (positions in mm, normals,
 and color, or the scanner's grayscale brightness for runs without color
-frames), `stage_axes.json`, and `preview_*.png` renderings from six directions.
+frames), `mesh.ply` (a triangle mesh fitted to the points, colored the same
+way; `--no-mesh` skips it), `stage_axes.json`, and `preview_*.png` renderings
+from six directions.
 
 The stage needs no separate calibration. The two rotation axes are fitted from
 the scan itself, by minimizing how far neighboring views disagree once each is
@@ -82,8 +84,15 @@ turned back by its commanded angles. On the first duck scan the axes came out
 view is filtered (pixels at depth edges and surfaces seen nearly edge-on are
 dropped), the views are merged, and the result is cropped to the object: the
 post and cap it sits on are found as a stack of cylinders on the turntable axis
-and cut away. Red and yellow surfaces reflect little of the scanner's blue
-light, so expect holes there (the duck's beak).
+and cut away. Yellow surfaces reflect little of the scanner's blue light and
+need long exposures. Some surfaces give little depth even then: the duck's pink
+beak got depth on only 10–33% of its pixels in any one view at 60000, so expect
+holes there.
+
+The mesh is fitted with Poisson surface reconstruction, which bridges holes
+like those in the beak. Poisson also closes the opening where the mount was
+cut away, with surface no point supports, so the mesh is trimmed back to
+within 1 mm of the points. Holes wider than about 2 mm keep an opening.
 
 An object on a soft mount also tips as the cradle tilts. The bust, held on its
 cap by a gel pad about 0.5 mm thick, leaned toward the scanner at high
@@ -104,14 +113,17 @@ duck it made little difference.
 
 ### Color
 
-Each view's points are colored from its color frame, using the color camera's
-calibration stored on the scanner, and skipping points the color camera can't
-see (it sits 15 mm from the depth camera, so it sees around edges
-differently). The colors are then white balanced, and each final point takes
-the mean color of the merged points around it. The color camera only runs
-while the projector does, so its frames carry faint projector stripes. These
-stay put in the frame while the object turns under them, so averaging over
-views removes them.
+Each point of the cloud, and each vertex of the mesh, is colored from every
+view's color frame that sees it. It is projected into the frame using the
+color camera's calibration stored on the scanner. It counts as unseen if it
+faces away or something nearer hides it (the color camera sits 15 mm from the
+depth camera, so it sees around edges differently). The colors are white
+balanced and averaged over the frames, each weighted by how squarely the
+surface faces the camera. A point takes color even from views that got no
+depth there, which matters for surfaces like the duck's beak. The color camera
+only runs while the projector does, so its frames carry faint projector
+stripes. These stay put in the frame while the object turns under them, so
+averaging over views removes them.
 
 Scan under a steady lamp aimed at the object from the scanner's side:
 
@@ -147,6 +159,14 @@ The extra run's views are placed using the axes fitted from the main run. For
 the duck, 20 views around the beak took 3 minutes, lined up with the main scan
 as well as its own views do (about 0.1 mm), and nearly doubled the points
 within 5 mm of the beak's center.
+
+New angles are what help. Repeating a pose fills the same pixels again: three
+captures of one beak pose together covered only 3–4 points more of it than the
+best one alone. Turning the lamp off helped a little at 60000 (the beak got
+depth on 24% and 33% of its pixels at two poses, against 21% and 27% with the
+lamp), because the lamp adds brightness without adding stripe contrast. An
+extra run's color frames color the object too, so capture a lamp-off run with
+`--no-color`. What holes remain, the mesh bridges.
 
 ### Larger objects
 

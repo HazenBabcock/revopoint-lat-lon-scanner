@@ -26,7 +26,7 @@ and options, read these first:
 | `lat_lon_scanner/stage.py` | `Stage`: G-code over USB serial (moves, position, zero, release, driver warnings), plus a small CLI. |
 | `lat_lon_scanner/scanner.py` | `Scanner`: depth capture at several exposures through revopoint-python, and the scanner's calibration files. |
 | `lat_lon_scanner/capture.py` | Scan runs: the pose plan, moving the stage, saving each view. |
-| `lat_lon_scanner/reconstruct.py` | A run's views turned into one point cloud: exposure merging, stage axis and nod fitting, per-view refinement, mount removal, previews. |
+| `lat_lon_scanner/reconstruct.py` | A run's views turned into one point cloud: exposure merging, stage axis and nod fitting, per-view refinement, mount removal, coloring from the color frames, a Poisson mesh, previews. |
 | `tests/` | pytest tests for `reconstruct`. They use synthetic data and need no hardware. |
 | `firmware/` | Marlin configuration and build script. GPLv3, unlike the rest (MIT). |
 | `cad/` | The author's FreeCAD parts and assemblies, fabrication exports, and the BOM spreadsheet. |
@@ -115,8 +115,9 @@ point cloud. Point clouds are in that frame, in millimeters.
 ## Color camera
 
 `capture.py` saves a color frame per view, and `reconstruct.py` colors the
-point cloud from them (the README's Color section has the method). What the
-code relies on:
+point cloud and the mesh from them: every frame that sees a point counts, not
+only the frames of views that measured it (the README's Color section has the
+method). What the code relies on:
 
 - The color camera (1280 × 800 JPEG, `camera_id=50` on the scanner's media
   endpoint; `get_images(color = True)` in revopoint-python) only delivers
