@@ -73,6 +73,15 @@ def scan_plan(latitudes = default_latitudes, spacing_degrees = default_spacing_d
     return poses
 
 
+def parse_poses(text):
+    """Parse 'LATITUDE:LONGITUDE' pairs separated by spaces or commas into a list of (latitude, longitude)."""
+    poses = []
+    for item in text.replace(",", " ").split():
+        latitude, longitude = item.split(":")
+        poses.append((float(latitude), float(longitude)))
+    return poses
+
+
 def run_scan(stage, scanner, poses, run_directory, exposures = scanner_module.default_exposures,
              frames_per_exposure = 4, speed = stage_module.default_speed_degrees_per_second,
              settle_seconds = 0.5, settings = None):
@@ -137,12 +146,18 @@ def main():
                         help = "Stage speed, degrees/s.")
     parser.add_argument("--maximum-views", type = int, default = None,
                         help = "Stop after this many poses (for a quick test).")
+    parser.add_argument("--poses", default = None,
+                        help = "Scan these poses, in order, instead of the sphere plan: a quoted list of "
+                               "LATITUDE:LONGITUDE, e.g. --poses '0:-7 15:-7 15:8'. Use --poses=... for a single pose.")
     arguments = parser.parse_args()
 
-    for latitude in arguments.latitudes:
+    if arguments.poses is not None:
+        poses = parse_poses(arguments.poses)
+    else:
+        poses = scan_plan(arguments.latitudes, arguments.spacing)
+    for latitude, longitude in poses:
         if abs(latitude) > stage_module.latitude_hard_limit_degrees:
             parser.error(f"Latitude {latitude} is outside +-{stage_module.latitude_hard_limit_degrees}")
-    poses = scan_plan(arguments.latitudes, arguments.spacing)
     if arguments.maximum_views is not None:
         poses = poses[:arguments.maximum_views]
     run_directory = arguments.data_root / arguments.date / arguments.name

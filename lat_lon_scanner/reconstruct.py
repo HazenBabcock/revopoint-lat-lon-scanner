@@ -22,9 +22,11 @@ Steps:
    thinned, cleaned of stray points and disconnected fragments, and given
    surface normals.
 
-Results go to <run>/reconstruction/: point_cloud.ply (points, normals, and
-the scanner's grayscale brightness as color), stage_axes.json, and
-preview_*.png renderings.
+Results go to <run>/reconstruction/ (or --output-name): point_cloud.ply
+(points, normals, and the scanner's grayscale brightness as color),
+stage_axes.json, and preview_*.png renderings. --extra-runs merges in more
+runs of the same object, such as a close-up of one area at a longer exposure,
+placed using the main run's fitted axes.
 """
 import argparse
 import json
@@ -371,17 +373,19 @@ def render_preview(points, normals, colors, eye_direction, up_hint, image_size =
     return (255 * image).astype(np.uint8)
 
 
-def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, voxel_size = default_voxel_millimeters,
-                refine = False):
+def load_run_views(run_directory):
+    """
+    Return (poses, points, normals, brightness) for each view of a run, in the
+    camera frame, with edge pixels and edge-on surfaces already dropped.
+    """
     run_directory = pathlib.Path(run_directory)
-    output_directory = run_directory / "reconstruction"
-    output_directory.mkdir(exist_ok = True)
     information = json.loads((run_directory / "run.json").read_text())
     poses = [tuple(pose) for pose in information["poses"]]
     camera_matrix = read_rectified_camera_matrix(run_directory / "calibration" / "mapparamL.bin")
+    # Brightness comes from brightness_exposure, or the nearest exposure the run has.
+    exposure_for_brightness = min(information["exposures"], key = lambda exposure: abs(exposure - brightness_exposure))
 
-    start = time.monotonic()
-    view_points, view_brightness, view_normals = [], [], []
+    view_points, view_normals, view_brightness = [], [], []
     for view_index in range(len(poses)):
         view_data = np.load(run_directory / f"view_{view_index:03d}.npz")
         depth = remove_depth_edges(merge_exposures(view_data, information["exposures"]))
@@ -395,7 +399,24 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
         facing = np.sum(normals * -points, axis = 1) / np.linalg.norm(points, axis = 1) > minimum_facing_cosine
         view_points.append(points[facing])
         view_normals.append(normals[facing])
-        view_brightness.append(view_data[f"mono_{brightness_exposure}"][:400][rows[facing], columns[facing]] / 255.0)
+        view_brightness.append(view_data[f"mono_{exposure_for_brightness}"][:400][rows[facing], columns[facing]] / 255.0)
+    return poses, view_points, view_normals, view_brightness
+
+
+def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, voxel_size = default_voxel_millimeters,
+                refine = False, extra_runs = (), output_name = "reconstruction"):
+    """
+    Reconstruct the object from run_directory. The stage axes are fitted from
+    that run alone; views from extra_runs (taken without moving the scanner or
+    re-zeroing the stage) are placed with the same axes and merged in.
+    """
+    run_directory = pathlib.Path(run_directory)
+    output_directory = run_directory / output_name
+    output_directory.mkdir(exist_ok = True)
+    camera_matrix = read_rectified_camera_matrix(run_directory / "calibration" / "mapparamL.bin")
+
+    start = time.monotonic()
+    poses, view_points, view_normals, view_brightness = load_run_views(run_directory)
     print(f"{len(poses)} views loaded, {sum(len(p) for p in view_points)} points, {time.monotonic() - start:.0f} s", flush = True)
 
     upright_index = poses.index((0.0, 0.0))
@@ -418,6 +439,18 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
         print(f"  joint refinement: misalignment {before:.3f} -> {after:.3f} mm", flush = True)
     else:
         after = before
+
+    for extra_run in extra_runs:
+        extra_poses, extra_points, extra_normals, extra_brightness = load_run_views(extra_run)
+        extra_transforms = [model.camera_to_object(*pose) for pose in extra_poses]
+        extra_near = [np.linalg.norm(points - center, axis = 1) < crop_radius for points in extra_points]
+        object_clouds += [apply_transform(transform, points[mask])
+                          for transform, points, mask in zip(extra_transforms, extra_points, extra_near)]
+        transforms += extra_transforms
+        near_center += extra_near
+        view_normals += extra_normals
+        view_brightness += extra_brightness
+        print(f"  added {len(extra_poses)} views from {extra_run}", flush = True)
 
     points = np.concatenate(object_clouds)
     normals = np.concatenate([normals[mask] @ transform[:3, :3].T
@@ -451,7 +484,8 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
                    "misalignment_after_refinement_millimeters" : after,
                    "mount_top_millimeters" : mount_top, "mount_radius_millimeters" : mount_radius,
                    "crop_radius_millimeters" : crop_radius, "voxel_millimeters" : voxel_size,
-                   "camera_matrix" : camera_matrix.tolist(), "point_count" : len(final_points)}
+                   "camera_matrix" : camera_matrix.tolist(), "point_count" : len(final_points),
+                   "extra_runs" : [str(extra_run) for extra_run in extra_runs]}
     (output_directory / "stage_axes.json").write_text(json.dumps(axes_record, indent = 2))
 
     # Previews in the object frame. "front" is where the camera was at latitude 0, longitude 0
@@ -484,8 +518,14 @@ def main():
                         help = "Output point spacing in mm (default %(default)s).")
     parser.add_argument("--refine", action = "store_true",
                         help = "Also refine each view with joint ICP (did not improve the 2026-10-27 duck scan).")
+    parser.add_argument("--extra-runs", type = pathlib.Path, nargs = "+", default = [],
+                        help = "More runs of the same object, taken without moving the scanner or re-zeroing the "
+                               "stage (e.g. a close-up of one area); placed with the main run's axes and merged in.")
+    parser.add_argument("--output-name", default = "reconstruction",
+                        help = "Output directory inside the run (default %(default)s).")
     arguments = parser.parse_args()
-    reconstruct(arguments.run_directory, arguments.crop_radius, arguments.voxel, refine = arguments.refine)
+    reconstruct(arguments.run_directory, arguments.crop_radius, arguments.voxel, refine = arguments.refine,
+                extra_runs = arguments.extra_runs, output_name = arguments.output_name)
 
 
 if __name__ == "__main__":

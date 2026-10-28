@@ -56,6 +56,26 @@ post and cap it sits on are found as a stack of cylinders on the turntable axis
 and cut away. Red and yellow surfaces reflect little of the scanner's blue
 light, so expect holes there (the duck's beak).
 
+### Filling in a dark area
+
+A dark area, such as the duck's red beak, keeps getting depth at longer
+exposures after the rest of the object has stopped improving. Rather than
+rescanning everything, scan just that area at 60000 (the top of the scanner's
+useful range) as a second run, without moving the scanner or re-zeroing the
+stage, then merge it in:
+
+```bash
+python -m lat_lon_scanner.capture duck_beak --exposures 60000 \
+    --poses "-15:-37 -15:-22 -15:-7 -15:8 -15:23 0:23 0:8 0:-7 0:-22 0:-37"
+python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/duck \
+    --extra-runs ~/Data/revopoint/<date>/duck_beak --output-name reconstruction_with_beak
+```
+
+The extra run's views are placed using the axes fitted from the main run. For
+the duck, 20 views around the beak took 3 minutes, lined up with the main scan
+as well as its own views do (about 0.1 mm), and nearly doubled the points
+within 5 mm of the beak's center.
+
 ## Stage conventions
 
 Positions are in degrees. Zero is the cradle upright (turntable axis vertical),
