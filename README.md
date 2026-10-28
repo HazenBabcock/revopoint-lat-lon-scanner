@@ -4,12 +4,13 @@ A two-axis stage that turns an object in front of a fixed Revopoint MINI 3D
 scanner: a turntable (longitude) carried on a tilting cradle (latitude). Both
 axes are stepper motors driven by a BigTreeTech SKR Mini E3 V3.0.
 
-![The stage with a rubber duck on the turntable, and a mesh of the duck from its scan](images/overview.jpg)
+![The stage with a rubber duck on the turntable, and the duck's scanned mesh in color and in gray](images/overview.jpg)
 
 Left: the stage, with the scanner in front and a rubber duck on the turntable.
-Right: a mesh of the duck, made from its scanned point cloud
-([`examples/duck_point_cloud.ply`](examples/duck_point_cloud.ply)) with Open3D's
-Poisson surface reconstruction.
+Right: the duck's mesh as the reconstruction builds it
+([`examples/duck_color_mesh.ply`](examples/duck_color_mesh.ply)), colored from
+the scanner's color camera. The same mesh without color (top right) shows the
+scanned surface. The scale bar is for the color render.
 
 - [`firmware/`](firmware/) - Marlin configuration and build script for the
   board, which then takes G-code over USB. Licensed separately under the GPLv3.
@@ -17,7 +18,7 @@ Poisson surface reconstruction.
   and the scanner.
 - [`cad/`](cad/) - FreeCAD models of the stage, the DXF and STL files sent out
   for fabrication, and the bill of materials.
-- [`examples/`](examples/) - some example scans, as point clouds.
+- [`examples/`](examples/) - some example scans, as point clouds and a colored mesh.
 - [`notes/agent-guide.md`](notes/agent-guide.md) - a guide for AI agents working with this repository.
 
 ## Requirements

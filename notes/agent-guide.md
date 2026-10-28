@@ -30,7 +30,7 @@ and options, read these first:
 | `tests/` | pytest tests for `reconstruct`. They use synthetic data and need no hardware. |
 | `firmware/` | Marlin configuration and build script. GPLv3, unlike the rest (MIT). |
 | `cad/` | The author's FreeCAD parts and assemblies, fabrication exports, and the BOM spreadsheet. |
-| `examples/` | Example scans as point clouds (`.ply`, mm, with normals and brightness as color). |
+| `examples/` | Example scans (`.ply`, mm, with normals): point clouds with brightness as color, and the duck's mesh in its scanned colors. |
 | `images/` | Images for the README. |
 
 Scan data lives outside the repo, by default in
