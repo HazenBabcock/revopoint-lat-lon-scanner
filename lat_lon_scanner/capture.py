@@ -1,6 +1,6 @@
 """
 Run a lat/lon scan: move the stage through a grid of views and capture depth
-at several exposures at each one.
+at several exposures, and a color frame, at each one.
 
 The stage must already be energized and zeroed upright this power-up
 (python -m lat_lon_scanner.stage zero); the scan does not set zero itself.
@@ -9,9 +9,13 @@ Each run is written to <data_root>/<date>/<name>/:
 
     run.json                      settings, poses and scanner firmware
     calibration/mapparamL.bin     the scanner's per-camera calibration files
-    calibration/mapparamR.bin
-    view_000.npz, view_001.npz... one per pose: latitude, longitude, and
-                                  depth_<exposure> / mono_<exposure> arrays
+    calibration/mapparamR.bin     (the depth cameras', then the color camera's)
+    calibration/Prgb.bin, Distort.bin, LC_RT.bin
+    view_000.npz, view_001.npz... one per pose: latitude, longitude,
+                                  depth_<exposure> / mono_<exposure> arrays,
+                                  and (unless --no-color) color, the color
+                                  camera's frame, with color_frames, how many
+                                  frames its median was taken over
 
     python -m lat_lon_scanner.capture duck
 """
@@ -84,7 +88,7 @@ def parse_poses(text):
 
 def run_scan(stage, scanner, poses, run_directory, exposures = scanner_module.default_exposures,
              frames_per_exposure = 4, speed = stage_module.default_speed_degrees_per_second,
-             settle_seconds = 0.5, settings = None):
+             settle_seconds = 0.5, color = True, settings = None):
     """
     Visit each pose, capture, and save. Returns the stage to (0, 0) when the
     scan finishes; after an error the stage is left where it stopped.
@@ -105,6 +109,7 @@ def run_scan(stage, scanner, poses, run_directory, exposures = scanner_module.de
                        "frames_per_exposure" : frames_per_exposure,
                        "speed_degrees_per_second" : speed,
                        "settle_seconds" : settle_seconds,
+                       "color" : color,
                        "poses" : poses,
                        "settings" : settings or {}}
     (run_directory / "run.json").write_text(json.dumps(run_information, indent = 2))
@@ -113,11 +118,14 @@ def run_scan(stage, scanner, poses, run_directory, exposures = scanner_module.de
     for view_index, (latitude, longitude) in enumerate(poses):
         stage.move_to(latitude, longitude, speed)
         time.sleep(settle_seconds)
-        captures = scanner.capture_exposures(exposures, frames_per_exposure)
+        captures = scanner.capture_exposures(exposures, frames_per_exposure, color = color)
         arrays = {"latitude" : latitude, "longitude" : longitude}
         for exposure, capture in captures.items():
             arrays[f"depth_{exposure}"] = capture["depth"]
             arrays[f"mono_{exposure}"] = capture["mono"]
+            if "color" in capture:
+                arrays["color"] = capture["color"]
+                arrays["color_frames"] = capture["color_frames"]
         np.savez_compressed(run_directory / f"view_{view_index:03d}.npz", **arrays)
 
         prewarnings = [axis for axis, warned in stage.driver_prewarnings().items() if warned]
@@ -142,6 +150,8 @@ def main():
                         help = "Target arc between neighboring views, degrees (default %(default)s).")
     parser.add_argument("--exposures", type = int, nargs = "+", default = scanner_module.default_exposures)
     parser.add_argument("--frames", type = int, default = 4, help = "Depth frames per exposure.")
+    parser.add_argument("--no-color", dest = "color", action = "store_false",
+                        help = "Skip the color camera's frame at each view.")
     parser.add_argument("--speed", type = float, default = stage_module.default_speed_degrees_per_second,
                         help = "Stage speed, degrees/s.")
     parser.add_argument("--maximum-views", type = int, default = None,
@@ -166,7 +176,8 @@ def main():
     with stage_module.Stage() as stage:
         run_scan(stage, scanner_module.Scanner(), poses, run_directory,
                  exposures = arguments.exposures, frames_per_exposure = arguments.frames,
-                 speed = arguments.speed, settings = vars(arguments) | {"data_root" : str(arguments.data_root)})
+                 speed = arguments.speed, color = arguments.color,
+                 settings = vars(arguments) | {"data_root" : str(arguments.data_root)})
 
 
 if __name__ == "__main__":

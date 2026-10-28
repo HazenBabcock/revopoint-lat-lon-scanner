@@ -31,8 +31,16 @@ depth_unit_millimeters = 0.004851
 # 2026-10-27 duck scan).
 leading_frames_discarded = 1
 
-# Per-camera calibration (intrinsics, distortion, rectification) on the scanner.
-calibration_paths = ("/data/camparam/mapparamL.bin", "/data/camparam/mapparamR.bin")
+# Per-camera calibration (intrinsics, distortion, rectification) on the scanner,
+# and the color camera's: Prgb.bin (its camera matrix for a 640x400 image),
+# Distort.bin (k1 k2 p1 p2 k3) and LC_RT.bin (rotation and translation in mm
+# from the rectified left camera, where depth is, to the color camera).
+calibration_paths = ("/data/camparam/mapparamL.bin", "/data/camparam/mapparamR.bin",
+                     "/data/camparam/Prgb.bin", "/data/camparam/Distort.bin", "/data/camparam/LC_RT.bin")
+
+# The color camera only runs alongside a depth stream (projector on), so its
+# frames are taken during one exposure's capture, the one nearest this.
+preferred_color_exposure = 24000
 
 
 class Scanner(object):
@@ -41,7 +49,7 @@ class Scanner(object):
         self.address = address
         self.revopoint = revopoint.Revopoint(ipAddr = address)
 
-    def capture_exposures(self, exposures = default_exposures, frames_per_exposure = 4):
+    def capture_exposures(self, exposures = default_exposures, frames_per_exposure = 4, color = False):
         """
         Capture frames_per_exposure depth frames at each exposure, after
         discarding the stream's first leading_frames_discarded frames.
@@ -51,21 +59,32 @@ class Scanner(object):
         stereo pair (left camera on top) from the last frame. The depth map is
         registered to the left image.
 
+        With color, the capture at the exposure nearest preferred_color_exposure
+        also has "color": the median of the color camera's frames taken during
+        it, (800, 1280, 3) uint8 RGB, and "color_frames", how many went into it.
+        Like the depth, the first color frame is left out when there are
+        others, in case it is left over from the previous pose.
+
         Every stream is closed after its capture and the exposure is set back to
         resting_exposure, even on failure: a stream left open keeps the projector
         running.
         """
+        color_exposure = min(exposures, key = lambda exposure: abs(exposure - preferred_color_exposure)) if color else None
         captures = {}
         try:
             for exposure in exposures:
                 self.revopoint.set_exposure(exposure)
                 requested = frames_per_exposure + leading_frames_discarded
-                images = self.revopoint.get_images(requested)
+                images = self.revopoint.get_images(requested, color = (exposure == color_exposure))
                 self._close_streams()
                 if len(images["depth"]) != requested:
                     raise RuntimeError(f"Got {len(images['depth'])} of {requested} frames at exposure {exposure}")
                 captures[exposure] = {"depth" : np.array(images["depth"][leading_frames_discarded:]),
                                       "mono" : np.array(images["other"][-1])}
+                if exposure == color_exposure:
+                    color_frames = images["color"][1:] if len(images["color"]) > 1 else images["color"]
+                    captures[exposure]["color"] = np.median(np.array(color_frames), axis = 0).astype(np.uint8)
+                    captures[exposure]["color_frames"] = len(color_frames)
         finally:
             try:
                 self.revopoint.set_exposure(resting_exposure)

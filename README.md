@@ -48,7 +48,9 @@ python -m lat_lon_scanner.stage zero
 ```
 
 Then scan. Each run goes to `~/Data/revopoint/<date>/<name>/`, with one `.npz`
-per view holding the depth frames and stereo images at each exposure:
+per view holding the depth frames and stereo images at each exposure, and a
+frame from the scanner's color camera (`--no-color` skips it). For color, light
+the object with a steady lamp (see [Color](#color)):
 
 ```bash
 python -m lat_lon_scanner.capture duck
@@ -56,8 +58,9 @@ python -m lat_lon_scanner.capture duck
 
 The default plan is latitudes +90, +60, +30, 0 and −20, with each row's
 longitudes spaced so neighboring views are about 30° of arc apart on the sphere
-(`--spacing`): 1, 6, 10, 12 and 11 views, 40 in all at about 15 s each. Each
-view captures 4 depth frames at each of three exposures (12000, 24000, 40000).
+(`--spacing`): 1, 6, 10, 12 and 11 views, 40 in all at about 18 s each. Each
+view captures 4 depth frames at each of three exposures (12000, 24000, 40000),
+and the color frame during the 24000 one.
 `python -m lat_lon_scanner.stage` also takes `position`,
 `move <latitude> <longitude>` and `release`.
 
@@ -69,8 +72,8 @@ python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/duck
 
 This needs the `reconstruct` extras (Open3D, SciPy) and writes
 `reconstruction/` inside the run: `point_cloud.ply` (positions in mm, normals,
-and the scanner's grayscale brightness as color), `stage_axes.json`, and
-`preview_*.png` renderings from six directions.
+and color, or the scanner's grayscale brightness for runs without color
+frames), `stage_axes.json`, and `preview_*.png` renderings from six directions.
 
 The stage needs no separate calibration. The two rotation axes are fitted from
 the scan itself, by minimizing how far neighboring views disagree once each is
@@ -98,6 +101,32 @@ joint ICP over neighboring views, starting from the fitted model
 (`--no-refine` skips it; it takes a minute or two). On the bust the head's
 surface went from layers about 0.3 mm thick to one layer under 0.1 mm; on the
 duck it made little difference.
+
+### Color
+
+Each view's points are colored from its color frame, using the color camera's
+calibration stored on the scanner, and skipping points the color camera can't
+see (it sits 15 mm from the depth camera, so it sees around edges
+differently). The colors are then white balanced, and each final point takes
+the mean color of the merged points around it. The color camera only runs
+while the projector does, so its frames carry faint projector stripes. These
+stay put in the frame while the object turns under them, so averaging over
+views removes them.
+
+Scan under a steady lamp aimed at the object from the scanner's side:
+
+- The color camera's exposure and white balance are automatic and can't be
+  set, so in daylight the colors drift as clouds pass.
+- Next to a lamp the projector's light is weak. Without one it can dominate,
+  and some dyes fluoresce in it: the duck's yellow came out green.
+
+The white balance gains (`color_white_balance_gains` in `reconstruct.py`)
+were measured from the gray patches of a color card held where the object sits,
+under the lamp used for the duck. A different light needs new gains. The camera
+also seems to see near-infrared, which mutes some colors (it reads a navy
+patch as brown and a green one as gray), so a full color fit to the card's
+patches did worse than the white balance alone. An LED lamp, with little
+infrared, may give cleaner color than an incandescent one.
 
 ### Filling in a dark area
 

@@ -25,10 +25,15 @@ Steps:
    rotation center, with the post and cap it sits on cut away. The result is
    thinned, cleaned of stray points and disconnected fragments, and given
    surface normals.
+5. If the run has color frames, each view's points are colored from its
+   frame (projected through the color camera's calibration, skipping points
+   it can't see), white balanced, and each final point gets the mean color
+   of the merged points around it. The projector's stripes, fixed in the
+   color frames while the object moves under them, average out.
 
 Results go to <run>/reconstruction/ (or --output-name): point_cloud.ply
-(points, normals, and the scanner's grayscale brightness as color),
-stage_axes.json, and preview_*.png renderings. --extra-runs merges in more
+(points, normals, and color, or the scanner's grayscale brightness for runs
+without color frames), stage_axes.json, and preview_*.png renderings. --extra-runs merges in more
 runs of the same object, such as a close-up of one area at a longer exposure,
 placed using the main run's fitted axes.
 """
@@ -75,6 +80,19 @@ minimum_facing_cosine = 0.25
 
 default_crop_radius_millimeters = 32.0
 default_voxel_millimeters = 0.3
+
+# White balance for the scanner's color camera: gains on its linear R, G, B
+# (the JPEG's sRGB curve undone) that make the gray patches of a DGK Digital
+# Kolor Kard neutral. Measured 2026-10-28 under a lamp, the card where the
+# object sits, the scanner at the front of its slot. Scan under a steady lamp:
+# in daylight the colors drift as clouds pass, and the projector's light, weak
+# next to a lamp, can dominate (the duck's yellow dye fluoresces green in it).
+# A full 3x3 color fit to the card's 18 patches did worse than this by eye: the
+# camera seems to see near-infrared, reading inks it should tell apart nearly
+# alike (navy as brown, green as gray), and the fit bent other hues to match
+# (mean CIE76 delta E 19 under the lamp, 17.5 in daylight).
+color_white_balance_gains = np.array([0.627, 1.152, 1.894])
+color_camera_to_linear_srgb = np.diag(color_white_balance_gains)
 
 
 class Progress(object):
@@ -141,6 +159,116 @@ def read_rectified_camera_matrix(path):
     signs = np.diag(np.sign(np.diag(upper)))
     camera_matrix = upper @ signs
     return camera_matrix / camera_matrix[2, 2]
+
+
+def read_color_camera(calibration_directory, frame_width = 1280):
+    """
+    Return the color camera's calibration from a run's calibration files, or
+    None if the run has none: {"matrix": 3x3 for a frame_width wide frame,
+    "distortion": k1 k2 p1 p2 k3, "rotation", "translation"}, where rotation
+    and translation (mm) take points from the rectified left camera frame
+    (where the depth is) into the color camera's. Prgb.bin holds int16 width
+    and height, then the 3x3 matrix as float32 for that size (640x400, half
+    the color stream's).
+    """
+    calibration_directory = pathlib.Path(calibration_directory)
+    paths = [calibration_directory / name for name in ("Prgb.bin", "Distort.bin", "LC_RT.bin")]
+    if not all(path.exists() for path in paths):
+        return None
+    matrix_data, distortion_data, transform_data = (path.read_bytes() for path in paths)
+    width, height, *matrix = struct.unpack("<2h9f", matrix_data)
+    matrix = np.array(matrix).reshape(3, 3)
+    matrix[:2] *= frame_width / width
+    transform = np.array(struct.unpack("<12f", transform_data))
+    return {"matrix" : matrix, "distortion" : np.array(struct.unpack("<5f", distortion_data)),
+            "rotation" : transform[:9].reshape(3, 3), "translation" : transform[9:]}
+
+
+def project_to_color_camera(points, color_camera):
+    """
+    Return the (x, y) pixel of each point (rectified left camera frame, mm) in
+    the color frame, with the lens distortion (OpenCV's model), and its depth
+    along the color camera's axis.
+    """
+    in_color = points @ color_camera["rotation"].T + color_camera["translation"]
+    x, y = in_color[:, 0] / in_color[:, 2], in_color[:, 1] / in_color[:, 2]
+    k1, k2, p1, p2, k3 = color_camera["distortion"]
+    radius_squared = x ** 2 + y ** 2
+    radial = 1 + k1 * radius_squared + k2 * radius_squared ** 2 + k3 * radius_squared ** 3
+    distorted_x = x * radial + 2 * p1 * x * y + p2 * (radius_squared + 2 * x ** 2)
+    distorted_y = y * radial + p1 * (radius_squared + 2 * y ** 2) + 2 * p2 * x * y
+    homogeneous = np.column_stack([distorted_x, distorted_y, np.ones_like(x)]) @ color_camera["matrix"].T
+    return homogeneous[:, :2], in_color[:, 2]
+
+
+def srgb_to_linear(values):
+    """sRGB-encoded values (0-1) to linear light."""
+    values = np.asarray(values, float)
+    return np.where(values <= 0.04045, values / 12.92, ((values + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(values):
+    """Linear light to sRGB-encoded values (0-1), clipped to the 0-1 range."""
+    values = np.clip(values, 0, 1)
+    return np.where(values <= 0.0031308, 12.92 * values, 1.055 * values ** (1 / 2.4) - 0.055)
+
+
+def view_colors(points, color_frame, color_camera, occlusion_millimeters = 2.0, bin_pixels = 2):
+    """
+    Return each point's color from a view's color frame, as linear RGB white
+    balanced with color_camera_to_linear_srgb, or NaN where the color camera
+    doesn't see it.
+
+    The color camera sits 14.7 mm from the left one, so near a depth edge it
+    can see a nearer surface where the left camera saw a farther one. A point
+    counts as seen if nothing nearer than occlusion_millimeters lands within a
+    bin of it: a depth buffer of the view's own points in bin_pixels bins,
+    spread to the neighboring bins to close the gaps between projected points.
+    """
+    height, width = color_frame.shape[:2]
+    pixels, depth = project_to_color_camera(points, color_camera)
+    inside = ((pixels[:, 0] >= 0) & (pixels[:, 0] < width - 1) & (pixels[:, 1] >= 0) & (pixels[:, 1] < height - 1)
+              & (depth > 0))
+    bin_rows, bin_columns = -(-height // bin_pixels), -(-width // bin_pixels)
+    bins = np.zeros(len(points), int)
+    bins[inside] = ((pixels[inside, 1] // bin_pixels).astype(int) * bin_columns
+                    + (pixels[inside, 0] // bin_pixels).astype(int))
+    nearest = np.full(bin_rows * bin_columns, np.inf)
+    np.minimum.at(nearest, bins[inside], depth[inside])
+    nearest = scipy.ndimage.minimum_filter(nearest.reshape(bin_rows, bin_columns), size = 3).ravel()
+    seen = inside & (depth <= nearest[bins] + occlusion_millimeters)
+
+    # Bilinear sampling of the frame at each seen point.
+    x, y = pixels[seen, 0], pixels[seen, 1]
+    left, top = np.floor(x).astype(int), np.floor(y).astype(int)
+    right_weight, bottom_weight = (x - left)[:, None], (y - top)[:, None]
+    frame = color_frame.astype(float) / 255.0
+    sampled = ((frame[top, left] * (1 - right_weight) + frame[top, left + 1] * right_weight) * (1 - bottom_weight)
+               + (frame[top + 1, left] * (1 - right_weight) + frame[top + 1, left + 1] * right_weight) * bottom_weight)
+    colors = np.full((len(points), 3), np.nan)
+    colors[seen] = srgb_to_linear(sampled) @ color_camera_to_linear_srgb
+    return colors
+
+
+def blend_colors(final_points, points, colors, radius_millimeters = 0.5):
+    """
+    Return each final point's color as the mean of the colors (NaN = none) of
+    the merged points within radius_millimeters, NaN where there are none.
+    The radius takes in points from several views, so the projector's
+    stripes, fixed in the color frames while the object moves under them,
+    average out.
+    """
+    colored = ~np.isnan(colors[:, 0])
+    tree = scipy.spatial.cKDTree(points[colored])
+    neighbors = tree.query_ball_point(final_points, radius_millimeters, workers = -1)
+    counts = np.array([len(indices) for indices in neighbors])
+    sums = np.zeros((len(final_points), 3))
+    owners = np.repeat(np.arange(len(final_points)), counts)
+    if counts.sum() > 0:
+        np.add.at(sums, owners, colors[colored][np.concatenate([indices for indices in neighbors if indices])])
+    blended = np.full((len(final_points), 3), np.nan)
+    blended[counts > 0] = sums[counts > 0] / counts[counts > 0, None]
+    return blended
 
 
 def consistent_frames(frames, depth_band_raw = default_depth_band_raw):
@@ -561,18 +689,21 @@ def render_preview(points, normals, colors, eye_direction, up_hint, image_size =
 
 def load_run_views(run_directory, depth_band_raw = default_depth_band_raw, progress = None):
     """
-    Return (poses, points, normals, brightness) for each view of a run, in the
-    camera frame, with edge pixels and edge-on surfaces already dropped.
+    Return (poses, points, normals, brightness, colors) for each view of a run,
+    in the camera frame, with edge pixels and edge-on surfaces already dropped.
+    A view's colors are corrected linear sRGB (NaN where the color camera
+    doesn't see the point), or None if the run has no color frames.
     """
     progress = progress if progress is not None else Progress()
     run_directory = pathlib.Path(run_directory)
     information = json.loads((run_directory / "run.json").read_text())
     poses = [tuple(pose) for pose in information["poses"]]
     camera_matrix = read_rectified_camera_matrix(run_directory / "calibration" / "mapparamL.bin")
+    color_camera = read_color_camera(run_directory / "calibration")
     # Brightness comes from brightness_exposure, or the nearest exposure the run has.
     exposure_for_brightness = min(information["exposures"], key = lambda exposure: abs(exposure - brightness_exposure))
 
-    view_points, view_normals, view_brightness = [], [], []
+    view_points, view_normals, view_brightness, view_color_lists = [], [], [], []
     for view_index in range(len(poses)):
         progress.update(f"loading {run_directory.name}: view {view_index + 1}/{len(poses)}")
         view_data = np.load(run_directory / f"view_{view_index:03d}.npz")
@@ -588,7 +719,12 @@ def load_run_views(run_directory, depth_band_raw = default_depth_band_raw, progr
         view_points.append(points[facing])
         view_normals.append(normals[facing])
         view_brightness.append(view_data[f"mono_{exposure_for_brightness}"][:400][rows[facing], columns[facing]] / 255.0)
-    return poses, view_points, view_normals, view_brightness
+        # Colored before the edge-on surfaces are dropped, since those still hide what is behind them.
+        if color_camera is not None and "color" in view_data.files:
+            view_color_lists.append(view_colors(points, view_data["color"], color_camera)[facing])
+        else:
+            view_color_lists.append(None)
+    return poses, view_points, view_normals, view_brightness, view_color_lists
 
 
 def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, voxel_size = default_voxel_millimeters,
@@ -604,7 +740,8 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     camera_matrix = read_rectified_camera_matrix(run_directory / "calibration" / "mapparamL.bin")
 
     progress = Progress()
-    poses, view_points, view_normals, view_brightness = load_run_views(run_directory, depth_band_raw, progress)
+    poses, view_points, view_normals, view_brightness, view_color_lists = load_run_views(run_directory, depth_band_raw,
+                                                                                         progress)
     progress.report(f"{len(poses)} views loaded, {sum(len(p) for p in view_points)} points")
 
     upright_index = nearest_upright_view(poses)
@@ -630,7 +767,8 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
         after = before
 
     for extra_run in extra_runs:
-        extra_poses, extra_points, extra_normals, extra_brightness = load_run_views(extra_run, depth_band_raw, progress)
+        extra_poses, extra_points, extra_normals, extra_brightness, extra_colors = load_run_views(extra_run, depth_band_raw,
+                                                                                                  progress)
         extra_transforms = [model.camera_to_object(*pose) for pose in extra_poses]
         extra_near = [np.linalg.norm(points - center, axis = 1) < crop_radius for points in extra_points]
         object_clouds += [apply_transform(transform, points[mask])
@@ -639,12 +777,17 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
         near_center += extra_near
         view_normals += extra_normals
         view_brightness += extra_brightness
+        view_color_lists += extra_colors
         progress.report(f"  added {len(extra_poses)} views from {extra_run}")
 
     points = np.concatenate(object_clouds)
     normals = np.concatenate([normals[mask] @ transform[:3, :3].T
                               for normals, mask, transform in zip(view_normals, near_center, transforms)])
     brightness = np.concatenate([values[mask] for values, mask in zip(view_brightness, near_center)])
+    has_color = any(colors is not None for colors in view_color_lists)
+    if has_color:
+        colors = np.concatenate([colors[mask] if colors is not None else np.full((mask.sum(), 3), np.nan)
+                                 for colors, mask in zip(view_color_lists, near_center)])
     # Measure the mount from the turntable axis, not the rotation center: the
     # center sits midway between the axes, so it is off the turntable axis by
     # half their gap (0.79 mm for the 2026-10-27 bust), enough to make the post
@@ -665,8 +808,23 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     progress.report(f"  kept the largest connected piece: {len(cloud.points)} of {before_cluster} points")
     normals = np.asarray(cloud.normals)
     cloud.normals = open3d.utility.Vector3dVector(normals / np.linalg.norm(normals, axis = 1, keepdims = True))
-    open3d.io.write_point_cloud(str(output_directory / "point_cloud.ply"), cloud)
     final_points = np.asarray(cloud.points)
+    final_brightness = np.asarray(cloud.colors)[:, 0].copy()
+    color_record = None
+    if has_color:
+        # Colors from the views that saw each point, scaled so the brightest 1% reach white
+        # (the correction was fitted under a different light), and gray where none did.
+        blended = blend_colors(final_points, points[keep], colors[keep])
+        colored = ~np.isnan(blended[:, 0])
+        level_scale = 1.0 / np.percentile(blended[colored].max(axis = 1), 99)
+        final_colors = np.full((len(final_points), 3), 0.5)
+        final_colors[colored] = linear_to_srgb(blended[colored] * level_scale)
+        cloud.colors = open3d.utility.Vector3dVector(final_colors)
+        color_record = {"views_with_color" : sum(colors is not None for colors in view_color_lists),
+                        "colored_fraction" : float(colored.mean()), "level_scale" : float(level_scale)}
+        progress.report(f"  colored {colored.mean():.1%} of the points from "
+                        f"{color_record['views_with_color']} views' color frames")
+    open3d.io.write_point_cloud(str(output_directory / "point_cloud.ply"), cloud)
     extent = final_points.max(axis = 0) - final_points.min(axis = 0)
     progress.report(f"  {len(final_points)} points written, extent {extent.round(1)} mm")
 
@@ -682,14 +840,13 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
                    "crop_radius_millimeters" : crop_radius, "voxel_millimeters" : voxel_size,
                    "depth_band_millimeters" : [raw * scanner_module.depth_unit_millimeters for raw in depth_band_raw],
                    "camera_matrix" : camera_matrix.tolist(), "point_count" : len(final_points),
-                   "extra_runs" : [str(extra_run) for extra_run in extra_runs]}
+                   "extra_runs" : [str(extra_run) for extra_run in extra_runs], "color" : color_record}
     (output_directory / "stage_axes.json").write_text(json.dumps(axes_record, indent = 2))
 
     # Previews in the object frame. "front" is where the camera was at latitude 0, longitude 0
     # (it looked along +z); "right" is the camera's right (+x), and so on.
-    brightness = np.asarray(cloud.colors)[:, 0]
-    low, high = np.percentile(brightness, [2, 98])
-    stretched = np.repeat(np.clip((brightness - low) / (high - low), 0, 1)[:, None], 3, axis = 1)
+    low, high = np.percentile(final_brightness, [2, 98])
+    stretched = np.repeat(np.clip((final_brightness - low) / (high - low), 0, 1)[:, None], 3, axis = 1)
     gray = np.full_like(stretched, 0.8)
     toward_camera = np.array([0.0, 0.0, -1.0])
     views = {"front" : toward_camera,
@@ -699,7 +856,8 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
              "top" : up + 0.05 * toward_camera,
              "three_quarter" : toward_camera + 0.8 * up + 0.8 * Rotation.from_rotvec(np.radians(90) * up).apply(toward_camera)}
     for name, direction in views.items():
-        for suffix, point_colors in [("shape", gray), ("brightness", stretched)]:
+        renderings = [("shape", gray), ("brightness", stretched)] + ([("color", final_colors)] if has_color else [])
+        for suffix, point_colors in renderings:
             image = render_preview(final_points, np.asarray(cloud.normals), point_colors, direction, up,
                                    point_millimeters = voxel_size)
             open3d.io.write_image(str(output_directory / f"preview_{name}_{suffix}.png"), open3d.geometry.Image(image))

@@ -156,3 +156,47 @@ def test_refinement_does_not_move_the_object_with_one_view():
     centroids = np.array([cloud.mean(axis = 0) for cloud in corrected])
     assert np.abs(centroids[0] - centroids[1]).max() < 0.05
     assert np.abs(centroids.mean(axis = 0) - np.mean([cloud.mean(axis = 0) for cloud in clouds], axis = 0)).max() < 0.05
+
+
+def plane(x_range, y_range, z, spacing):
+    x, y = np.meshgrid(np.arange(*x_range, spacing), np.arange(*y_range, spacing))
+    return np.column_stack([x.ravel(), y.ravel(), np.full(x.size, z)])
+
+
+def test_color_camera_occlusion():
+    # The color camera sits 15 mm to the right of the left camera, so it sees
+    # part of the wall that a nearer square hides from it but not from the
+    # left camera. Those wall points must get no color, the rest the frame's.
+    color_camera = {"matrix" : np.array([[1000.0, 0, 640], [0, 1000.0, 400], [0, 0, 1]]), "distortion" : np.zeros(5),
+                    "rotation" : np.eye(3), "translation" : np.array([-15.0, 0, 0])}
+    square = plane((-5, 5), (-5, 5), 100.0, 0.15)
+    wall = plane((-30, 30), (-20, 20), 150.0, 0.2)
+    # Only the wall the left camera sees (the square hides |x|, |y| < 7.5 from it).
+    wall = wall[(np.abs(wall[:, 0]) >= 7.5) | (np.abs(wall[:, 1]) >= 7.5)]
+    points = np.concatenate([square, wall])
+    frame = np.full((800, 1280, 3), 128, np.uint8)
+    colors = reconstruct.view_colors(points, frame, color_camera)
+    seen = ~np.isnan(colors[:, 0])
+    wall_seen = seen[len(square):]
+    # Seen from the color camera, the square hides the wall at -15 < x < 0, |y| < 7.5.
+    hidden = (wall[:, 0] > -13) & (wall[:, 0] < -9.5) & (np.abs(wall[:, 1]) < 6)
+    far_away = np.abs(wall[:, 0]) > 20
+    assert not wall_seen[hidden].any()
+    assert wall_seen[far_away].all()
+    assert seen[:len(square)].all()
+    expected = reconstruct.srgb_to_linear(np.full(3, 128 / 255)) @ reconstruct.color_camera_to_linear_srgb
+    assert np.allclose(colors[seen], expected)
+
+
+def test_color_projection_matches_opencv():
+    cv2 = pytest.importorskip("cv2")
+    color_camera = {"matrix" : np.array([[1779.1, 0, 637.7], [0, 1782.5, 410.8], [0, 0, 1]]),
+                    "distortion" : np.array([0.2233, -0.5897, -0.00096, -0.00145, 0.01]),
+                    "rotation" : Rotation.from_euler("y", -9.6, degrees = True).as_matrix(),
+                    "translation" : np.array([-14.44, 0.03, -3.05])}
+    points = np.random.default_rng(8).uniform([-30, -20, 90], [30, 20, 160], (500, 3))
+    pixels, depth = reconstruct.project_to_color_camera(points, color_camera)
+    expected, _ = cv2.projectPoints(points, cv2.Rodrigues(color_camera["rotation"])[0], color_camera["translation"],
+                                    color_camera["matrix"], color_camera["distortion"])
+    assert np.allclose(pixels, expected.reshape(-1, 2), atol = 1e-6)
+    assert np.allclose(depth, (points @ color_camera["rotation"].T + color_camera["translation"])[:, 2])

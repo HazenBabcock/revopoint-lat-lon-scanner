@@ -112,27 +112,33 @@ sin(latitude) (objects on the gel pad tip as the cradle tilts; see the
 `StageModel` docstring), and writes them to `stage_axes.json` next to each
 point cloud. Point clouds are in that frame, in millimeters.
 
-## Color camera (work in progress)
+## Color camera
 
-The package doesn't capture or use color yet. What is known so far:
+`capture.py` saves a color frame per view, and `reconstruct.py` colors the
+point cloud from them (the README's Color section has the method). What the
+code relies on:
 
 - The color camera (1280 × 800 JPEG, `camera_id=50` on the scanner's media
   endpoint; `get_images(color = True)` in revopoint-python) only delivers
-  frames while a depth stream runs.
+  frames while a depth stream runs, so the projector is always on. After the
+  scanner powers up its auto exposure takes about 5 s to settle; the first
+  capture then returns just one frame.
 - Its calibration is on the scanner in `/oem/camparam/` (`/data/camparam`
-  links there), readable with the same `download=` request `scanner.py` uses:
+  links there), downloaded into each run's `calibration/` folder:
   - `Prgb.bin`: the image size it applies to (two int16: 640, 400), then the
     3 × 3 camera matrix as float32. Scale it by 2 for the 1280 × 800 stream.
-  - `Distort.bin`: k1, k2, p1, p2, k3.
+  - `Distort.bin`: k1, k2, p1, p2, k3 (OpenCV's model).
   - `LC_RT.bin`: a 3 × 3 rotation, then a translation in mm, taking points
     from the rectified left camera frame (where the depth is) into the color
     camera frame.
-
-  At one test pose, projecting depth points through these landed within a few
-  pixels of the matching color edges.
-- The projector's stripes appear in every color frame in the same place, so
-  averaging frames doesn't remove them. More room light, filtering, and
-  blending across views are the candidates.
+- The camera's exposure and white balance are automatic and can't be set.
+  Color needs a steady lamp: daylight drifts with clouds, and without a lamp
+  the projector's light dominates (some dyes fluoresce in it).
+- The white balance gains in `reconstruct.py` were measured under one lamp.
+  A full 3 × 3 color fit to a color card did worse; the camera seems to see
+  near-infrared.
+- The projector's stripes are in every color frame in the same place, so
+  averaging frames doesn't remove them; averaging across views does.
 
 ## Working on the code
 
