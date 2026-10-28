@@ -46,14 +46,14 @@ build, on four sheets:
 
 - **McMaster order**: the McMaster-Carr parts and how many of each to order.
 - **Full BOM**: every part, including the plates, printed parts, control board,
-  motors and motor cables.
+  motors, motor cables and the board's 24 V power supply.
 - **By sub-assembly**: the counts behind every total. They are the only
   quantities typed in (in blue); the rest are formulas.
 - **Notes**: how the parts were counted and measured, and what to check before
   ordering.
 
-Most counts come from `assembly.FCStd`. The counterweights, the motor cables and
-the real motors (the model has stand-ins) were added by hand.
+Most counts come from `assembly.FCStd`. The counterweights, the motor cables, the
+power supply and the real motors (the model has stand-ins) were added by hand.
 
 ## Missing parts
 
