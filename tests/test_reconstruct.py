@@ -131,3 +131,28 @@ def test_nod_is_undone():
         nodded = rotate_about(turned, model.latitude_axis, model.nod_pivot, 2.0 * np.sin(np.radians(latitude)))
         camera = rotate_about(nodded, model.latitude_axis, model.latitude_point, latitude)
         assert np.allclose(reconstruct.apply_transform(model.camera_to_object(latitude, longitude), camera), points)
+
+
+def box_surface(random_generator, count = 8000):
+    """Points on the faces of a 30 x 20 x 40 mm box centered on the origin."""
+    half_sizes = np.array([15.0, 10.0, 20.0])
+    points = random_generator.uniform(-1, 1, (count, 3)) * half_sizes
+    face_axis = random_generator.integers(0, 3, count)
+    points[np.arange(count), face_axis] = np.sign(random_generator.uniform(-1, 1, count)) * half_sizes[face_axis]
+    return points
+
+
+def test_refinement_does_not_move_the_object_with_one_view():
+    # 2026-10-27 bust: the refinement pinned the first view (the +90 view),
+    # which was itself 2 mm off, so everything else moved with it and the mount
+    # was no longer found on the turntable axis. One shifted view must be
+    # brought back without moving the object as a whole.
+    surface = box_surface(np.random.default_rng(7))
+    poses = [(0.0, longitude) for longitude in range(0, 120, 20)]
+    shift = np.array([0.6, 0.3, 0.0])
+    clouds = [surface + shift] + [surface.copy() for _ in poses[1:]]
+    corrections = reconstruct.refine_poses(clouds, poses)
+    corrected = [reconstruct.apply_transform(correction, cloud) for correction, cloud in zip(corrections, clouds)]
+    centroids = np.array([cloud.mean(axis = 0) for cloud in corrected])
+    assert np.abs(centroids[0] - centroids[1]).max() < 0.05
+    assert np.abs(centroids.mean(axis = 0) - np.mean([cloud.mean(axis = 0) for cloud in clouds], axis = 0)).max() < 0.05

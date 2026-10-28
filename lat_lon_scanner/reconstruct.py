@@ -16,9 +16,11 @@ Steps:
    longitude 0. Then a nod of the object that grows with the gravity load,
    sin(latitude), about a pivot on the turntable axis is fitted (an object on
    a soft mount tips as the cradle tilts), and the axes are refitted with it.
-3. Optionally (--refine), each view's pose is refined with a joint
-   (multiway) ICP that starts from the fitted axes. On the first duck scan the
-   fitted axes alone were as good (0.285 vs 0.288 mm misalignment).
+3. Each view's pose is refined with a joint (multiway) ICP that starts from
+   the fitted model (--no-refine skips it). An object on a soft mount can also
+   shift in single views: the bust shifted by up to 2 mm during one row,
+   likely on its gel pad, and the refinement merged the layers that left
+   (misalignment 0.426 -> 0.324 mm). On the duck it made no difference.
 4. All views are merged and cropped to the object: a sphere around the
    rotation center, with the post and cap it sits on cut away. The result is
    thinned, cleaned of stray points and disconnected fragments, and given
@@ -358,6 +360,12 @@ def refine_poses(object_clouds, poses, voxel_size = 0.8, maximum_distance = 1.0)
     """
     Joint (multiway) ICP over neighboring views. Returns a small correction
     transform for each view, applied after the stage model.
+
+    The corrections are anchored so that on average they leave the object where
+    the stage model put it, keeping the mount on the fitted turntable axis for
+    remove_mount. Pinning one view instead moves everything with that view's
+    own error: on the 2026-10-27 bust, pinning the +90 view shifted the rest
+    about 2 mm and the mount was no longer found.
     """
     clouds = []
     for points in object_clouds:
@@ -382,7 +390,11 @@ def refine_poses(object_clouds, poses, voxel_size = 0.8, maximum_distance = 1.0)
         open3d.pipelines.registration.global_optimization(
             pose_graph, open3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
             open3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(), option)
-    return [np.array(node.pose) for node in pose_graph.nodes]
+    corrections = [np.array(node.pose) for node in pose_graph.nodes]
+    average = np.eye(4)
+    average[:3, :3] = Rotation.from_matrix([correction[:3, :3] for correction in corrections]).mean().as_matrix()
+    average[:3, 3] = np.mean([correction[:3, 3] for correction in corrections], axis = 0)
+    return [np.linalg.inv(average) @ correction for correction in corrections]
 
 
 def remove_mount(points, axis_point, up, slice_millimeters = 0.5):
@@ -522,7 +534,7 @@ def load_run_views(run_directory, depth_band_raw = default_depth_band_raw):
 
 
 def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, voxel_size = default_voxel_millimeters,
-                refine = False, extra_runs = (), output_name = "reconstruction", depth_band_raw = default_depth_band_raw):
+                refine = True, extra_runs = (), output_name = "reconstruction", depth_band_raw = default_depth_band_raw):
     """
     Reconstruct the object from run_directory. The stage axes are fitted from
     that run alone; views from extra_runs (taken without moving the scanner or
@@ -649,8 +661,8 @@ def main():
                                "for the scanner at the front of its mount slot).")
     parser.add_argument("--voxel", type = float, default = default_voxel_millimeters,
                         help = "Output point spacing in mm (default %(default)s).")
-    parser.add_argument("--refine", action = "store_true",
-                        help = "Also refine each view with joint ICP (did not improve the 2026-10-27 duck scan).")
+    parser.add_argument("--no-refine", dest = "refine", action = "store_false",
+                        help = "Skip refining each view with joint ICP after the stage model (it takes a few minutes).")
     parser.add_argument("--extra-runs", type = pathlib.Path, nargs = "+", default = [],
                         help = "More runs of the same object, taken without moving the scanner or re-zeroing the "
                                "stage (e.g. a close-up of one area); placed with the main run's axes and merged in.")

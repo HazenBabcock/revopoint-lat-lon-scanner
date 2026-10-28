@@ -90,7 +90,14 @@ gravity load, gain × sin(latitude), about a pivot on the turntable axis, and
 then refits the axes with it. For the bust the nod came out 2.5° at latitude 90,
 and the misalignment of views up to 70° apart fell from 0.53 to 0.46 mm; for
 the duck it was 0.5°, with little effect. Fitting the nod doubles the
-reconstruction time (42 minutes for the bust's 88 views).
+reconstruction time (43 minutes for the bust's 88 views).
+
+A soft mount can also let the object shift in single views: the bust moved by
+up to 2 mm during its +50 row. So each view's pose is then refined with a
+joint ICP over neighboring views, starting from the fitted model
+(`--no-refine` skips it; it takes a minute or two). On the bust the head's
+surface went from layers about 0.3 mm thick to one layer under 0.1 mm; on the
+duck it made little difference.
 
 ### Filling in a dark area
 
