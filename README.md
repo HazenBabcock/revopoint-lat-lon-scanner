@@ -8,6 +8,8 @@ axes are stepper motors driven by a BigTreeTech SKR Mini E3 V3.0.
   board, which then takes G-code over USB. Licensed separately under the GPLv3.
 - [`lat_lon_scanner/`](lat_lon_scanner/) - Python package that drives the stage
   and the scanner.
+- [`cad/`](cad/) - FreeCAD models of the stage, and the DXF and STL files sent
+  out for fabrication.
 
 ## Requirements
 
@@ -113,6 +115,25 @@ set with `G92 X0 Y0` after each power-up since there are no limit switches.
   turntable plate.
 - Turning the object counterclockwise moves the scanner's viewpoint clockwise
   around it, so +Y lowers the viewpoint's longitude on the object.
+
+## CAD
+
+[`cad/`](cad/) has the FreeCAD 1.1 models of the stage and the files sent out
+for fabrication. The assemblies also use models that can't be redistributed
+here, so FreeCAD opens them with those parts missing:
+
+- The scanner, from [Revopoint Mini](https://grabcad.com/library/revopoint-mini-1)
+  and [Revopoint - Pop 3 Set](https://grabcad.com/library/revopoint-pop-3-1) on
+  GrabCAD.
+- The control board, from BigTreeTech's
+  [SKR Mini E3 repository](https://github.com/bigtreetech/BIGTREETECH-SKR-mini-E3/tree/master/hardware/BTT%20SKR%20MINI%20E3%20V3.0/3D).
+- The example object, from
+  [Small bust scanned with Revopoint MINI](https://grabcad.com/library/small-bust-scanned-with-revopoint-mini-1)
+  on GrabCAD.
+- The motors and hardware, from McMaster-Carr.
+
+[`cad/README.md`](cad/README.md) lists each missing file and McMaster-Carr part
+number.
 
 ## License
 
