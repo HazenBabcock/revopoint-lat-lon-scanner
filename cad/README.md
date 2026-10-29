@@ -53,7 +53,8 @@ build, on four sheets:
   ordering.
 
 Most counts come from `assembly.FCStd`. The counterweights, the motor cables, the
-power supply and the real motors (the model has stand-ins) were added by hand.
+power supply, the washers that mount the scanner and the real motors (the model
+has stand-ins) were added by hand.
 
 ## Missing parts
 
