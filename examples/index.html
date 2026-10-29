@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Example Scans in 3D</title>
+<meta name="description" content="Example scans from revopoint-lat-lon-scanner, a two-axis stage for a Revopoint MINI 3D scanner, to turn around in the browser.">
+<style>
+  :root {
+    --background: #f6f6f4;
+    --text: #1d1d1f;
+    --muted: #5d5f63;
+    --border: #cfcfca;
+    --accent: #2f6fb3;
+    --accent-text: #ffffff;
+    --button: #ffffff;
+    --viewer-background: #e9e8e3;
+    --grid: #a3a29b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --background: #18181a;
+      --text: #e8e8e6;
+      --muted: #a2a4a8;
+      --border: #3c3c40;
+      --accent: #6ea5e0;
+      --accent-text: #0e1115;
+      --button: #242427;
+      --viewer-background: #222225;
+      --grid: #5a5a5f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--background);
+    color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.6rem; margin: 0.4rem 0; }
+  a { color: var(--accent); }
+  p { margin: 0.5rem 0; }
+  .muted { color: var(--muted); font-size: 0.9rem; }
+  .button-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; align-items: center; }
+  button {
+    font: inherit;
+    font-size: 0.95rem;
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--button);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .segmented { display: inline-flex; }
+  .segmented button { border-radius: 0; }
+  .segmented button:first-child { border-radius: 6px 0 0 6px; }
+  .segmented button:last-child { border-radius: 0 6px 6px 0; border-left: none; }
+  label.check { display: inline-flex; gap: 6px; align-items: center; font-size: 0.95rem; }
+  label.check.disabled { opacity: 0.45; }
+  .viewer {
+    position: relative;
+    height: min(70vh, 640px);
+    min-height: 320px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--viewer-background);
+    touch-action: none;
+  }
+  .viewer canvas { display: block; width: 100%; height: 100%; }
+  .status {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 16px;
+    color: var(--muted);
+    pointer-events: none;
+  }
+  .status[hidden] { display: none; }
+  #description { margin-top: 12px; }
+</style>
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+    }
+  }
+</script>
+</head>
+<body>
+<main>
+  <h1>Example scans</h1>
+  <p>Scans made with <a href="../">revopoint-lat-lon-scanner</a>, a two-axis stage that turns an object in front of a
+    Revopoint MINI 3D scanner. Each one loads when you pick it.</p>
+
+  <div class="button-row" id="model-buttons" role="group" aria-label="Example scan"></div>
+
+  <div class="viewer" id="viewer">
+    <div class="status" id="status">Loading three.js…</div>
+  </div>
+  <p class="muted">Drag to turn it, scroll or pinch to zoom, and right-drag or drag with two fingers to pan.
+    The grid's squares are 5 mm.</p>
+
+  <div class="button-row">
+    <span class="segmented" role="group" aria-label="Surface">
+      <button type="button" id="color-button" aria-pressed="true">Color</button>
+      <button type="button" id="gray-button" aria-pressed="false">Gray</button>
+    </span>
+    <label class="check" id="wireframe-label"><input type="checkbox" id="wireframe-check"> Wireframe</label>
+    <button type="button" id="reset-button">Reset view</button>
+  </div>
+
+  <p id="description"></p>
+  <p class="muted" id="details"></p>
+</main>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { PLYLoader } from "three/addons/loaders/PLYLoader.js";
+
+// File sizes are listed because the server compresses the files, so the
+// download's own length doesn't match the bytes that arrive.
+const models = [
+  {
+    file: "duck_color_mesh.ply", title: "Duck", kind: "mesh", bytes: 3533418,
+    description: "A rubber duck, as the reconstruction's mesh, colored from the scanner's color camera.",
+  },
+  {
+    file: "3d_printed_part_mesh.ply", title: "Printed part", kind: "mesh", bytes: 3662455,
+    description: "A part the author designed, printed in white nylon, as the reconstruction's mesh, colored from the scanner's color camera.",
+  },
+  {
+    file: "duck_point_cloud.ply", title: "Duck points", kind: "points", bytes: 2787874,
+    description: "The duck as a point cloud, from a run without color frames, so each point has the brightness the scanner measured.",
+  },
+  {
+    file: "bust_point_cloud.ply", title: "Bust points", kind: "points", bytes: 5472974,
+    description: "The small bust that comes with the scanner, as a point cloud. Each point has the brightness the scanner measured.",
+  },
+];
+
+// The point clouds' points are about 0.19 mm apart; discs a little under twice
+// that wide close the gaps between them.
+const pointSizeMillimeters = 0.35;
+const gridSquareMillimeters = 5;
+const fieldOfViewDegrees = 30;
+const startingElevationDegrees = 15;
+const grayColor = new THREE.Color(0xbdbcb6);
+
+const viewer = document.getElementById("viewer");
+const statusBox = document.getElementById("status");
+const colorButton = document.getElementById("color-button");
+const grayButton = document.getElementById("gray-button");
+const wireframeCheck = document.getElementById("wireframe-check");
+const wireframeLabel = document.getElementById("wireframe-label");
+const descriptionText = document.getElementById("description");
+const detailsText = document.getElementById("details");
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+viewer.prepend(renderer.domElement);
+renderer.domElement.setAttribute("role", "img");
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(fieldOfViewDegrees, 1, 0.1, 1000);
+scene.add(camera);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a8782, 1.8));
+// Lit from just above and left of the viewer, wherever the viewer goes.
+const headlight = new THREE.DirectionalLight(0xffffff, 2.2);
+headlight.position.set(-0.4, 0.6, 1);
+camera.add(headlight);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.addEventListener("change", render);
+
+const meshMaterials = {
+  color: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, metalness: 0, side: THREE.DoubleSide }),
+  gray: new THREE.MeshStandardMaterial({ color: grayColor, roughness: 0.7, metalness: 0, side: THREE.DoubleSide }),
+};
+
+// Points drawn as discs a fixed size in millimeters, lit like the meshes by a
+// headlight and an ambient term. Lit from both sides, since a point's normal
+// can point either way where the surface folds.
+const pointMaterial = new THREE.ShaderMaterial({
+  vertexColors: true,
+  uniforms: {
+    pointSize: { value: pointSizeMillimeters },
+    pixelsPerUnitAtUnitDepth: { value: 1 },
+    useVertexColor: { value: true },
+    baseColor: { value: grayColor },
+    lightDirection: { value: headlight.position.clone().normalize() },
+  },
+  vertexShader: `
+    uniform float pointSize;
+    uniform float pixelsPerUnitAtUnitDepth;
+    uniform bool useVertexColor;
+    uniform vec3 baseColor;
+    uniform vec3 lightDirection;
+    varying vec3 shadedColor;
+    void main() {
+      vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * viewPosition;
+      gl_PointSize = pointSize * pixelsPerUnitAtUnitDepth / -viewPosition.z;
+      float diffuse = abs(dot(normalize(normalMatrix * normal), lightDirection));
+      shadedColor = (useVertexColor ? color : baseColor) * (0.35 + 0.75 * diffuse);
+    }`,
+  fragmentShader: `
+    varying vec3 shadedColor;
+    void main() {
+      vec2 offset = gl_PointCoord - 0.5;
+      if (dot(offset, offset) > 0.25) discard;
+      gl_FragColor = vec4(shadedColor, 1.0);
+      #include <colorspace_fragment>
+    }`,
+});
+
+const loader = new PLYLoader();
+const loadedObjects = new Map();
+let currentModel = null;
+let currentObject = null;
+let grid = null;
+let surface = "color";
+let loadRequest = 0;
+
+function render() {
+  renderer.render(scene, camera);
+}
+
+function cssColor(name) {
+  return new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue(name).trim());
+}
+
+function applyTheme() {
+  scene.background = cssColor("--viewer-background");
+  if (grid) {
+    grid.material.color = cssColor("--grid");
+  }
+  render();
+}
+
+function resize() {
+  const width = viewer.clientWidth;
+  const height = viewer.clientHeight;
+  renderer.setSize(width, height, false);
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  pointMaterial.uniforms.pixelsPerUnitAtUnitDepth.value =
+    camera.projectionMatrix.elements[5] * renderer.getDrawingBufferSize(new THREE.Vector2()).y / 2;
+  render();
+}
+
+function formatMegabytes(bytes) {
+  return `${(bytes / 1e6).toFixed(1)} MB`;
+}
+
+function showStatus(text) {
+  statusBox.textContent = text;
+  statusBox.hidden = !text;
+}
+
+// The scans are in the scanner's camera frame, with +y down and +z away from
+// the scanner. Turning them 180 degrees about x stands them upright, facing
+// the viewer as they faced the scanner at latitude 0, longitude 0.
+function prepareGeometry(geometry) {
+  for (const name of ["position", "normal"]) {
+    const attribute = geometry.getAttribute(name);
+    if (attribute && !(attribute.array instanceof Float32Array)) {
+      geometry.setAttribute(name, new THREE.Float32BufferAttribute(attribute.array, attribute.itemSize));
+    }
+  }
+  geometry.rotateX(Math.PI);
+  geometry.computeBoundingBox();
+  geometry.translate(...geometry.boundingBox.getCenter(new THREE.Vector3()).negate().toArray());
+  geometry.computeBoundingBox();
+  geometry.computeBoundingSphere();
+}
+
+function makeObject(model, geometry) {
+  prepareGeometry(geometry);
+  if (model.kind === "mesh") {
+    return new THREE.Mesh(geometry, meshMaterials[surface]);
+  }
+  return new THREE.Points(geometry, pointMaterial);
+}
+
+function makeGrid(boundingBox) {
+  const size = boundingBox.getSize(new THREE.Vector3());
+  const squares = 2 * Math.ceil(0.75 * Math.max(size.x, size.z) / gridSquareMillimeters);
+  const gridHelper = new THREE.GridHelper(squares * gridSquareMillimeters, squares);
+  gridHelper.material.color = cssColor("--grid");
+  gridHelper.material.vertexColors = false;
+  gridHelper.material.transparent = true;
+  gridHelper.material.opacity = 0.7;
+  gridHelper.position.y = boundingBox.min.y - 0.2;
+  return gridHelper;
+}
+
+function fitCamera() {
+  const radius = currentObject.geometry.boundingSphere.radius;
+  const verticalHalfAngle = THREE.MathUtils.degToRad(fieldOfViewDegrees / 2);
+  const horizontalHalfAngle = Math.atan(Math.tan(verticalHalfAngle) * camera.aspect);
+  const distance = 1.15 * radius / Math.sin(Math.min(verticalHalfAngle, horizontalHalfAngle));
+  const elevation = THREE.MathUtils.degToRad(startingElevationDegrees);
+  camera.position.set(0, Math.sin(elevation), Math.cos(elevation)).multiplyScalar(distance);
+  camera.near = radius / 50;
+  camera.far = distance * 10;
+  camera.updateProjectionMatrix();
+  controls.target.set(0, 0, 0);
+  controls.minDistance = radius * 0.3;
+  controls.maxDistance = distance * 4;
+  controls.update();
+  render();
+}
+
+function describe(model, object) {
+  const size = object.geometry.boundingBox.getSize(new THREE.Vector3());
+  const vertexCount = object.geometry.getAttribute("position").count.toLocaleString();
+  const counts = model.kind === "mesh"
+    ? `${vertexCount} vertices, ${(object.geometry.index.count / 3).toLocaleString()} triangles`
+    : `${vertexCount} points`;
+  descriptionText.textContent = model.description;
+  detailsText.innerHTML = "";
+  detailsText.append(`${size.x.toFixed(1)} × ${size.y.toFixed(1)} × ${size.z.toFixed(1)} mm · ${counts} · `);
+  const link = document.createElement("a");
+  link.href = model.file;
+  link.textContent = `Download the PLY (${formatMegabytes(model.bytes)})`;
+  detailsText.append(link);
+}
+
+function updateControls() {
+  const isMesh = currentModel?.kind === "mesh";
+  colorButton.setAttribute("aria-pressed", String(surface === "color"));
+  grayButton.setAttribute("aria-pressed", String(surface === "gray"));
+  wireframeCheck.disabled = !isMesh;
+  wireframeLabel.classList.toggle("disabled", !isMesh);
+  for (const button of document.querySelectorAll("#model-buttons button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.file === currentModel?.file));
+  }
+}
+
+function applySurface() {
+  for (const material of Object.values(meshMaterials)) {
+    material.wireframe = wireframeCheck.checked;
+  }
+  pointMaterial.uniforms.useVertexColor.value = surface === "color";
+  if (currentObject?.isMesh) {
+    currentObject.material = meshMaterials[surface];
+  }
+  updateControls();
+  render();
+}
+
+function show(model, object) {
+  if (currentObject) {
+    scene.remove(currentObject);
+  }
+  if (grid) {
+    scene.remove(grid);
+    grid.geometry.dispose();
+    grid.material.dispose();
+  }
+  currentModel = model;
+  currentObject = object;
+  scene.add(object);
+  grid = makeGrid(object.geometry.boundingBox);
+  scene.add(grid);
+  renderer.domElement.setAttribute("aria-label", `3D view of ${model.title.toLowerCase()}`);
+  describe(model, object);
+  applySurface();
+  fitCamera();
+}
+
+async function select(model) {
+  history.replaceState(null, "", `#${model.file.replace(/\.ply$/, "")}`);
+  currentModel = model;
+  updateControls();
+  // Numbered, so a slow load that finishes after another pick is dropped.
+  const request = ++loadRequest;
+  if (loadedObjects.has(model.file)) {
+    showStatus("");
+    show(model, loadedObjects.get(model.file));
+    return;
+  }
+  showStatus(`Loading ${model.file}…`);
+  try {
+    const geometry = await loader.loadAsync(model.file, (progress) => {
+      if (request === loadRequest) {
+        const percent = Math.min(99, Math.round(100 * progress.loaded / model.bytes));
+        showStatus(`Loading ${model.file}… ${percent}%`);
+      }
+    });
+    const object = makeObject(model, geometry);
+    loadedObjects.set(model.file, object);
+    if (request === loadRequest) {
+      showStatus("");
+      show(model, object);
+    }
+  } catch (error) {
+    if (request === loadRequest) {
+      const hint = location.protocol === "file:" ? " Open this page through a web server, not as a file." : "";
+      showStatus(`Couldn't load ${model.file}.${hint}`);
+      console.error(error);
+    }
+  }
+}
+
+const modelButtons = document.getElementById("model-buttons");
+for (const model of models) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = model.title;
+  button.dataset.file = model.file;
+  button.setAttribute("aria-pressed", "false");
+  button.addEventListener("click", () => select(model));
+  modelButtons.append(button);
+}
+
+colorButton.addEventListener("click", () => { surface = "color"; applySurface(); });
+grayButton.addEventListener("click", () => { surface = "gray"; applySurface(); });
+wireframeCheck.addEventListener("change", applySurface);
+document.getElementById("reset-button").addEventListener("click", () => { if (currentObject) fitCamera(); });
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme);
+// A frame drawn while the page was hidden may never reach the screen.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) render(); });
+new ResizeObserver(resize).observe(viewer);
+
+applyTheme();
+resize();
+const requested = models.find((model) => `#${model.file.replace(/\.ply$/, "")}` === location.hash);
+select(requested ?? models[0]);
+</script>
+</body>
+</html>

@@ -10,15 +10,19 @@ Left: the stage, with the scanner in front and a rubber duck on the turntable.
 Right: the duck's mesh as the reconstruction builds it
 ([`examples/duck_color_mesh.ply`](examples/duck_color_mesh.ply)), colored from
 the scanner's color camera. The same mesh without color (top right) shows the
-scanned surface. The scale bar is for the color render.
+scanned surface. The scale bar is for the color render. The
+[example viewer](https://hazenbabcock.github.io/revopoint-lat-lon-scanner/examples/)
+turns it around in 3D in the browser.
 
 - [`firmware/`](firmware/) - Marlin configuration and build script for the
   board, which then takes G-code over USB. Licensed separately under the GPLv3.
-- [`lat_lon_scanner/`](lat_lon_scanner/) - Python package that drives the stage
-  and the scanner.
+- [`lat_lon_scanner/`](https://github.com/HazenBabcock/revopoint-lat-lon-scanner/tree/main/lat_lon_scanner) -
+  Python package that drives the stage and the scanner.
 - [`cad/`](cad/) - FreeCAD models of the stage, the DXF and STL files sent out
   for fabrication, and the bill of materials.
-- [`examples/`](examples/) - some example scans, as point clouds and colored meshes.
+- [`examples/`](examples/) - some example scans, as point clouds and colored
+  meshes, and a [3D viewer](https://hazenbabcock.github.io/revopoint-lat-lon-scanner/examples/)
+  for them.
 - [`notes/agent-guide.md`](notes/agent-guide.md) - a guide for AI agents working with this repository.
 
 ## Requirements

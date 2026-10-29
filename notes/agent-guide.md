@@ -30,7 +30,7 @@ and options, read these first:
 | `tests/` | pytest tests for `reconstruct`. They use synthetic data and need no hardware. |
 | `firmware/` | Marlin configuration and build script. GPLv3, unlike the rest (MIT). |
 | `cad/` | The author's FreeCAD parts and assemblies, fabrication exports, and the BOM spreadsheet. |
-| `examples/` | Example scans (`.ply`, mm, with normals): point clouds with brightness as color, and meshes in their scanned colors (the duck, and a white nylon part the author designed). |
+| `examples/` | Example scans (`.ply`, mm, with normals): point clouds with brightness as color, and meshes in their scanned colors (the duck, and a white nylon part the author designed). `index.html` is a three.js viewer for them (see [The website](#the-website)). |
 | `images/` | Images for the README. |
 
 Scan data lives outside the repo, by default in
@@ -157,6 +157,22 @@ method). What the code relies on:
   low priority (`nice`).
 - Keep third-party CAD models (GrabCAD, BigTreeTech, McMaster-Carr) out of the
   repo; their terms don't allow redistribution. `cad/README.md` links to them.
+
+## The website
+
+GitHub Pages publishes the root of `main` at
+https://hazenbabcock.github.io/revopoint-lat-lon-scanner/, and every push to
+`main` redeploys it within a minute or two.
+
+- Jekyll builds it: the README is the front page, Markdown files become pages,
+  and names starting with `_` are left out. In Markdown, two opening curly
+  braces in a row, or one followed by a percent sign, start Jekyll's template
+  syntax and can break the build.
+- A link to a folder only works on the site if the folder has a README or an
+  `index.html`. Link other folders to their GitHub tree URL.
+- `examples/index.html` is the 3D viewer. New examples need an entry in its
+  `models` list, with the file's size in bytes (the server compresses the
+  files, so the download doesn't report their real size).
 
 ## The bill of materials
 
