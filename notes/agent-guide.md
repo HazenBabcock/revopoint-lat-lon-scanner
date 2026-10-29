@@ -30,7 +30,7 @@ and options, read these first:
 | `tests/` | pytest tests for `reconstruct`. They use synthetic data and need no hardware. |
 | `firmware/` | Marlin configuration and build script. GPLv3, unlike the rest (MIT). |
 | `cad/` | The author's FreeCAD parts and assemblies, fabrication exports, and the BOM spreadsheet. |
-| `examples/` | Example scans (`.ply`, mm, with normals): point clouds with brightness as color, and the duck's mesh in its scanned colors. |
+| `examples/` | Example scans (`.ply`, mm, with normals): point clouds with brightness as color, and meshes in their scanned colors (the duck, and a white nylon part the author designed). |
 | `images/` | Images for the README. |
 
 Scan data lives outside the repo, by default in
@@ -79,8 +79,13 @@ command line.
   stream. After a stage move it shows the object at the old pose. Both
   revopoint-python's `get_images` and `scanner.py` drop it, and
   `reconstruct.consistent_frames` catches any that get through.
-- **Use exposures of 12000 or more.** At 10000 and below, some frames come out
-  nearly empty (the projector is dimmer on them). Scans use 12000, 24000 and 40000 by default.
+- **Match the exposures to the object's color; ask what it is.** Scans use
+  12000, 24000 and 40000 by default, which suit yellow, red and darker
+  objects. On those, at 10000 and below some frames come out nearly empty
+  (the projector is dimmer on them). White and light objects saturate at
+  12000 and above: a white nylon part got depth on 0.1-2% of each frame at
+  12000 and 24000, but at 2000-8000 every frame was full. Use
+  `--exposures 3000 6000` for them.
 - **Red and yellow surfaces reflect little of the projector's blue light,**
   so they leave holes. A second run at exposure 60000 aimed at the dark area,
   merged with `reconstruct --extra-runs`, fills them in (see the README).

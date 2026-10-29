@@ -18,7 +18,7 @@ scanned surface. The scale bar is for the color render.
   and the scanner.
 - [`cad/`](cad/) - FreeCAD models of the stage, the DXF and STL files sent out
   for fabrication, and the bill of materials.
-- [`examples/`](examples/) - some example scans, as point clouds and a colored mesh.
+- [`examples/`](examples/) - some example scans, as point clouds and colored meshes.
 - [`notes/agent-guide.md`](notes/agent-guide.md) - a guide for AI agents working with this repository.
 
 ## Requirements
@@ -61,7 +61,14 @@ The default plan is latitudes +90, +60, +30, 0 and −20, with each row's
 longitudes spaced so neighboring views are about 30° of arc apart on the sphere
 (`--spacing`): 1, 6, 10, 12 and 11 views, 40 in all at about 18 s each. Each
 view captures 4 depth frames at each of three exposures (12000, 24000, 40000),
-and the color frame during the 24000 one.
+and the color frame during the 24000 one (or the exposure nearest it).
+
+Those exposures suit yellow, red and darker objects. White and light objects
+saturate at them: a white nylon part
+([`examples/3d_printed_part_mesh.ply`](examples/3d_printed_part_mesh.ply)) got
+depth on only 0.1–2% of each frame at 12000 and 24000, but 92–95% at any one
+exposure from 2000 to 8000. Scan such objects with `--exposures 3000 6000`.
+
 `python -m lat_lon_scanner.stage` also takes `position`,
 `move <latitude> <longitude>` and `release`.
 
