@@ -43,6 +43,7 @@ placed using the main run's fitted axes.
 """
 import argparse
 import json
+import os
 import pathlib
 import shutil
 import struct
@@ -91,6 +92,24 @@ minimum_view_points = 100
 
 default_crop_radius_millimeters = 32.0
 default_voxel_millimeters = 0.3
+
+# The stage fits stop when a round of Powell's search over all the parameters
+# lowers the misalignment by less than this fraction (about 0.001 mm at
+# 0.5 mm). At 1e-5, figurine_2's axis fit at 0.8 mm (2026-11-05, 127 views)
+# spent 250 evaluations and 30 minutes without lowering it (0.419 -> 0.419 mm).
+fit_relative_tolerance = 2e-3
+
+# Neighboring views compared in the stage fits are at most this many times the
+# scan plan's spacing apart (and at most 40 degrees, or 70 for the nod fit).
+# A dense plan otherwise pairs each view with many more neighbors: figurine_2's
+# 15 degree plan had 18 per view within 40 degrees, the bust's 20 degree plan
+# 11, and each evaluation of the fit takes time in proportion. With these
+# limits (31 and 55 degrees for figurine_2) and fit_relative_tolerance, its
+# fit took 18 minutes instead of 115, the merged points came out within
+# 0.09 mm (median) of the earlier ones, and the misalignment after refinement
+# was the same, 0.347 mm.
+neighbor_arc_spacings = 2.1
+nod_arc_spacings = 3.7
 
 # Mesh vertices farther than this from every point are trimmed away. Poisson
 # closes the opening where the mount was cut away with surface no point
@@ -487,6 +506,14 @@ def neighbor_pairs(poses, maximum_arc_degrees = 40.0):
     return [(i, j) for i in range(len(poses)) for j in range(len(poses)) if i != j and arcs[i, j] <= maximum_arc_degrees]
 
 
+def plan_spacing_degrees(poses):
+    """The median arc from each view to its nearest neighbor."""
+    directions = np.array([view_direction(*pose) for pose in poses])
+    arcs = np.degrees(np.arccos(np.clip(directions @ directions.T, -1, 1)))
+    np.fill_diagonal(arcs, np.inf)
+    return float(np.median(arcs.min(axis = 1)))
+
+
 def nearest_upright_view(poses):
     """
     Index of the view nearest latitude 0, longitude 0 (the first one if several
@@ -502,15 +529,54 @@ def downsample(points, voxel_size):
     return np.asarray(cloud.voxel_down_sample(voxel_size).points)
 
 
+def usable_cores():
+    """The cores this process may run on (taskset can restrict them)."""
+    return len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count()
+
+
+def trimmed_mean(distances, keep_fraction):
+    """The mean of the smallest keep_fraction of the distances."""
+    keep = max(1, int(keep_fraction * len(distances)))
+    return float(np.mean(np.partition(distances, keep - 1)[:keep]))
+
+
 def misalignment(object_clouds, pairs, keep_fraction, cap_millimeters = 5.0):
     """Mean over neighbor pairs of the trimmed mean nearest-neighbor distance (mm)."""
     trees = [scipy.spatial.cKDTree(cloud) for cloud in object_clouds]
     costs = []
     for i, j in pairs:
-        distances, _ = trees[j].query(object_clouds[i], distance_upper_bound = cap_millimeters)
-        distances = np.sort(np.minimum(distances, cap_millimeters))
-        costs.append(np.mean(distances[:max(1, int(keep_fraction * len(distances)))]))
+        distances, _ = trees[j].query(object_clouds[i], distance_upper_bound = cap_millimeters, workers = usable_cores())
+        costs.append(trimmed_mean(np.minimum(distances, cap_millimeters), keep_fraction))
     return float(np.mean(costs))
+
+
+class ViewMisalignment(object):
+    """
+    misalignment() for views placed by trial stage models, which the fits
+    evaluate hundreds of times. Each view's k-d tree is built once, in its own
+    camera frame, and a trial moves its neighbors' points into that frame
+    instead of rebuilding the trees. Each view's neighbors are queried
+    together, spread over the usable cores.
+    """
+    def __init__(self, camera_clouds, pairs):
+        self.camera_clouds = camera_clouds
+        self.trees = [scipy.spatial.cKDTree(cloud) for cloud in camera_clouds]
+        self.neighbors = {}
+        for i, j in pairs:
+            self.neighbors.setdefault(j, []).append(i)
+
+    def __call__(self, transforms, keep_fraction, cap_millimeters = 5.0):
+        """Misalignment (mm) with each view moved into the object frame by its transform."""
+        costs = []
+        for j, neighbors in self.neighbors.items():
+            object_to_view = np.linalg.inv(transforms[j])
+            moved = [apply_transform(object_to_view @ transforms[i], self.camera_clouds[i]) for i in neighbors]
+            distances, _ = self.trees[j].query(np.concatenate(moved), distance_upper_bound = cap_millimeters,
+                                               workers = usable_cores())
+            distances = np.minimum(distances, cap_millimeters)
+            for pair_distances in np.split(distances, np.cumsum([len(points) for points in moved])[:-1]):
+                costs.append(trimmed_mean(pair_distances, keep_fraction))
+        return float(np.mean(costs))
 
 
 def estimate_center(upright_points):
@@ -539,41 +605,44 @@ def fit_stage_model(view_points, poses, center_guess, crop_radius, progress = No
     overlap less. On the bust, this score fell 11% for the nod against 6% for
     the neighbors-only one.
     """
-    nod_arc_degrees, nod_keep_fraction = 70.0, 0.4
+    nod_keep_fraction = 0.4
     progress = progress if progress is not None else Progress()
-    pairs = neighbor_pairs(poses)
+    spacing = plan_spacing_degrees(poses)
+    pairs = neighbor_pairs(poses, min(40.0, neighbor_arc_spacings * spacing))
+    nod_arc_degrees = min(70.0, nod_arc_spacings * spacing)
     parameters = np.array([0, 0, 0, 0, center_guess[1], center_guess[2], center_guess[0], center_guess[2]], float)
     nod = np.zeros(2)
 
-    def place(clouds, trial_parameters, trial_nod):
+    def transforms(trial_parameters, trial_nod):
         model = StageModel(trial_parameters, center_guess, *trial_nod)
-        return [apply_transform(model.camera_to_object(*pose), cloud) for cloud, pose in zip(clouds, poses)]
+        return [model.camera_to_object(*pose) for pose in poses]
 
-    def fit_axes(clouds, keep_fraction, label):
-        cost = lambda trial_parameters: misalignment(place(clouds, trial_parameters, nod), pairs, keep_fraction)
+    def fit_axes(view_misalignment, keep_fraction, label):
+        cost = lambda trial_parameters: view_misalignment(transforms(trial_parameters, nod), keep_fraction)
         start_cost = cost(parameters)
         result = scipy.optimize.minimize(progress.tracked(cost, label), parameters, method = "Powell",
-                                         options = {"xtol" : 1e-3, "ftol" : 1e-5, "maxfev" : 4000})
+                                         options = {"xtol" : 1e-3, "ftol" : fit_relative_tolerance, "maxfev" : 4000})
         progress.report(f"  {label}: misalignment {start_cost:.3f} -> {result.fun:.3f} mm")
         return result.x, float(result.fun)
 
     for voxel_size, keep_fraction in [(1.5, 0.5), (0.8, 0.6)]:
         clouds = [downsample(points[np.linalg.norm(points - center_guess, axis = 1) < crop_radius], voxel_size)
                   for points in view_points]
-        parameters, fit_misalignment = fit_axes(clouds, keep_fraction, f"axes fit at {voxel_size} mm")
+        axes_misalignment = ViewMisalignment(clouds, pairs)
+        parameters, fit_misalignment = fit_axes(axes_misalignment, keep_fraction, f"axes fit at {voxel_size} mm")
 
     # The pivot starts halfway down the crop sphere, near where the mount usually is.
-    nod_pairs = neighbor_pairs(poses, nod_arc_degrees)
-    nod_cost = lambda trial_nod: misalignment(place(clouds, parameters, trial_nod), nod_pairs, nod_keep_fraction)
+    nod_misalignment = ViewMisalignment(clouds, neighbor_pairs(poses, nod_arc_degrees))
+    nod_cost = lambda trial_nod: nod_misalignment(transforms(parameters, trial_nod), nod_keep_fraction)
     start_cost = nod_cost(nod)
     result = scipy.optimize.minimize(progress.tracked(nod_cost, "nod fit"), [0.0, -0.5 * crop_radius], method = "Powell",
                                      bounds = [(-10.0, 10.0), (-crop_radius, crop_radius)],
-                                     options = {"xtol" : 1e-2, "ftol" : 1e-5, "maxfev" : 300})
+                                     options = {"xtol" : 1e-2, "ftol" : fit_relative_tolerance, "maxfev" : 300})
     nod = result.x
     progress.report(f"  nod fit on views up to {nod_arc_degrees:.0f} degrees apart: misalignment {start_cost:.3f} -> "
                     f"{result.fun:.3f} mm, nod {nod[0]:+.2f} degrees x sin(latitude) about a pivot {nod[1]:+.1f} mm "
                     f"along the turntable axis from the rotation center")
-    parameters, fit_misalignment = fit_axes(clouds, keep_fraction, "axes refit with the nod")
+    parameters, fit_misalignment = fit_axes(axes_misalignment, keep_fraction, "axes refit with the nod")
     return StageModel(parameters, center_guess, *nod), fit_misalignment
 
 
