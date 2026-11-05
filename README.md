@@ -113,8 +113,8 @@ apart. So after the axes, the reconstruction fits a nod that grows with the
 gravity load, gain × sin(latitude), about a pivot on the turntable axis, and
 then refits the axes with it. For the bust the nod came out 2.5° at latitude 90,
 and the misalignment of views up to 70° apart fell from 0.53 to 0.46 mm; for
-the duck it was 0.5°, with little effect. The bust's 88 views take about 20
-minutes to reconstruct, 6 of them for the nod.
+the duck it was 0.5°, with little effect. The bust's 88 views take about 10
+minutes to reconstruct, 5 of them for the nod.
 
 A soft mount can also let the object shift in single views: the bust moved by
 up to 2 mm during its +50 row. So each view's pose is then refined with a

@@ -328,6 +328,21 @@ def photo_colors(points, normals, color_views, progress = None):
     return colors, frame_counts
 
 
+def median_over_frames(stack):
+    """
+    np.nanmedian(stack, axis = 0) for a short stack of frames: the same result,
+    ten times faster. numpy's takes 0.23 s on four 640 x 400 frames (it goes
+    through masked arrays), and merging a view's exposures takes 16 of them.
+    """
+    ordered = np.sort(stack, axis = 0)  # NaN sorts last.
+    counts = np.sum(~np.isnan(stack), axis = 0)
+    lower = np.take_along_axis(ordered, np.clip((counts - 1) // 2, 0, None)[None], axis = 0)[0]
+    upper = np.take_along_axis(ordered, np.clip(counts // 2, 0, len(stack) - 1)[None], axis = 0)[0]
+    median = 0.5 * (lower + upper)
+    median[counts == 0] = np.nan
+    return median
+
+
 def consistent_frames(frames, depth_band_raw = default_depth_band_raw):
     """
     Return the indices of the depth frames that agree with the rest of their
@@ -351,7 +366,7 @@ def consistent_frames(frames, depth_band_raw = default_depth_band_raw):
             valid = np.isfinite(depth[index])
             if not valid.any():
                 continue
-            others = np.nanmedian(np.delete(depth, index, axis = 0), axis = 0)
+            others = median_over_frames(np.delete(depth, index, axis = 0))
             unique = np.mean(np.isnan(others[valid]))
             overlap = valid & np.isfinite(others)
             disagreeing = (np.mean(np.abs(depth[index][overlap] - others[overlap]) > frame_disagreement_raw)
@@ -376,12 +391,12 @@ def merge_exposures(view_data, exposures, depth_band_raw = default_depth_band_ra
             if len(frames) == 0:
                 continue
             frames[(frames < depth_band_raw[0]) | (frames > depth_band_raw[1])] = np.nan
-            per_exposure.append(np.nanmedian(frames, axis = 0))
+            per_exposure.append(median_over_frames(frames))
         if not per_exposure:
             # Nothing in the band at any exposure (e.g. the object is out of range).
             return np.full(view_data[f"depth_{exposures[0]}"].shape[1:], np.nan)
         stack = np.array(per_exposure)
-        merged = np.nanmedian(stack, axis = 0)
+        merged = median_over_frames(stack)
         spread = np.nanmax(stack, axis = 0) - np.nanmin(stack, axis = 0)
     merged[spread > exposure_disagreement_raw] = np.nan
     return merged
