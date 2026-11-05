@@ -72,9 +72,9 @@ command line.
 - **The projector runs whenever a depth stream is open.** Close every stream
   you open. `Scanner.capture_exposures` closes its streams even on errors;
   follow the same pattern in new code. A stream left open can wedge the
-  projector, and then only power-cycling the scanner fixes it. The projector
-  can't be seen remotely, so after a session ask the human to confirm it is
-  off.
+  projector, and then only power-cycling the scanner fixes it. If a capture
+  crashes or is killed, ask the human to check that the projector is off; it
+  can't be seen remotely.
 - **The first frame of a stream can be stale,** left over from the previous
   stream. After a stage move it shows the object at the old pose. Both
   revopoint-python's `get_images` and `scanner.py` drop it, and
