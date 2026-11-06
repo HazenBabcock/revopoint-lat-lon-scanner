@@ -147,6 +147,12 @@ method). What the code relies on:
 - The camera's exposure and white balance are automatic and can't be set.
   Color needs a steady lamp: daylight drifts with clouds, and without a lamp
   the projector's light dominates (some dyes fluoresce in it).
+- Each view saves `white_balance_gains`, the red, green and blue gains the camera
+  was using (revopoint-python's `get_white_balance_gains`). `reconstruct` reports
+  them and warns if they move during a run, but doesn't use them to correct
+  color: nobody has seen what they read in a session with bad color yet. The color
+  of a whole session has gone far too yellow, and a power cycle seemed to cure it.
+  See `notes/http-api.md` in revopoint-python.
 - The white balance gains in `reconstruct.py` were measured under one lamp.
   A full 3 × 3 color fit to a color card did worse; the camera seems to see
   near-infrared.

@@ -155,6 +155,10 @@ minimum_mount_blue_ratio = 0.25
 mount_white_height_millimeters = 8.0
 minimum_mount_white_points = 200
 
+# A run whose camera white balance gains move by more than this fraction of
+# their median draws a warning: one balance then can't fit all its frames.
+maximum_white_balance_shift = 0.05
+
 # The linear color --white-from-mount brings the mount's median to. It sits
 # below 1 because surfaces facing the lamp are brighter than that median.
 white_nylon_color = np.array([0.8, 0.8, 0.8])
@@ -835,6 +839,25 @@ def low_blue_warning(mount_color):
             f"green, normally 0.5-0.6). If the colors look too yellow, set --white-from-mount.")
 
 
+def run_white_balance_gains(run_directory):
+    """Return the camera's red, green and blue gains for each view that recorded them, as an (n, 3) array."""
+    gains = []
+    for path in sorted(pathlib.Path(run_directory).glob("view_*.npz")):
+        with np.load(path) as view_data:
+            if "white_balance_gains" in view_data.files:
+                gains.append(view_data["white_balance_gains"])
+    return np.array(gains, dtype = float).reshape(-1, 3)
+
+
+def white_balance_shift_warning(gains):
+    """A warning if the gains of a run's views moved too far, otherwise None."""
+    shift = (gains.max(axis = 0) - gains.min(axis = 0)) / np.median(gains, axis = 0)
+    if shift.max() <= maximum_white_balance_shift:
+        return None
+    return (f"  warning: the camera's white balance moved during the run (red, green, blue by {(100 * shift).round(1)}%), "
+            f"so one balance doesn't fit all its color frames.")
+
+
 def keep_largest_cluster(cloud, neighbor_distance):
     """Drop everything not connected (within neighbor_distance) to the largest piece."""
     labels = np.array(cloud.cluster_dbscan(eps = neighbor_distance, min_points = 5))
@@ -1103,6 +1126,17 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
         color_record = {"color_frames" : len(color_views), "colored_fraction" : float(colored.mean()),
                         "median_frames_per_point" : float(np.median(frame_counts[colored])),
                         "white_source" : white_source, "gains" : color_gains.tolist()}
+        camera_gains = run_white_balance_gains(run_directory)
+        if len(camera_gains) > 0:
+            color_record["camera_white_balance"] = {"median" : np.median(camera_gains, axis = 0).tolist(),
+                                                    "minimum" : camera_gains.min(axis = 0).tolist(),
+                                                    "maximum" : camera_gains.max(axis = 0).tolist()}
+            progress.report(f"  camera white balance over {len(camera_gains)} views: median "
+                            f"{np.median(camera_gains, axis = 0).round(2)}, from {camera_gains.min(axis = 0).round(2)} "
+                            f"to {camera_gains.max(axis = 0).round(2)}")
+            warning = white_balance_shift_warning(camera_gains)
+            if warning is not None:
+                progress.report(warning)
         progress.report(f"  colored {colored.mean():.1%} of the points from {len(color_views)} color frames, "
                         f"a median of {color_record['median_frames_per_point']:.0f} per point")
     open3d.io.write_point_cloud(str(output_directory / "point_cloud.ply"), cloud)

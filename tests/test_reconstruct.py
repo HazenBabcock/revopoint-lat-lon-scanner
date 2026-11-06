@@ -303,6 +303,19 @@ def test_mount_median_color_needs_enough_of_the_mount():
     assert reconstruct.mount_median_color(mount_colors[:50]) is None
 
 
+def test_white_balance_gains_of_a_run(tmp_path):
+    # Each view that recorded gains counts, and views from before they were recorded are skipped.
+    np.savez(tmp_path / "view_000.npz", white_balance_gains = np.array([1.68, 0.96, 4.0]))
+    np.savez(tmp_path / "view_001.npz", latitude = 0.0)
+    np.savez(tmp_path / "view_002.npz", white_balance_gains = np.array([1.70, 0.96, 3.9]))
+    gains = reconstruct.run_white_balance_gains(tmp_path)
+    assert gains.shape == (2, 3)
+    assert np.allclose(gains[1], [1.70, 0.96, 3.9])
+    assert reconstruct.white_balance_shift_warning(gains) is None
+    assert reconstruct.white_balance_shift_warning(gains * [1.0, 1.0, 1.0] + [[0, 0, 0], [0, 0, -1.0]]) is not None
+    assert len(reconstruct.run_white_balance_gains(tmp_path / "missing")) == 0
+
+
 def test_low_blue_warning():
     # Mount colors measured on figurine_2 and the 2026-11-06 flower pot, whose frames had far too little blue.
     assert reconstruct.low_blue_warning(np.array([0.386, 0.220, 0.067])) is None

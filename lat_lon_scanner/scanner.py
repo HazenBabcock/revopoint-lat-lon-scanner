@@ -63,7 +63,9 @@ class Scanner(object):
         also has "color": the median of the color camera's frames taken during
         it, (800, 1280, 3) uint8 RGB, and "color_frames", how many went into it.
         Like the depth, the first color frame is left out when there are
-        others, in case it is left over from the previous pose.
+        others, in case it is left over from the previous pose. It also has
+        "white_balance_gains", the red, green and blue gains the camera was
+        using, if they could be read.
 
         Every stream is closed after its capture and the exposure is set back to
         resting_exposure, even on failure: a stream left open keeps the projector
@@ -85,6 +87,9 @@ class Scanner(object):
                     color_frames = images["color"][1:] if len(images["color"]) > 1 else images["color"]
                     captures[exposure]["color"] = np.median(np.array(color_frames), axis = 0).astype(np.uint8)
                     captures[exposure]["color_frames"] = len(color_frames)
+                    gains = images.get("white_balance_gains")
+                    if gains is not None:
+                        captures[exposure]["white_balance_gains"] = np.array([gains["red"], gains["green"], gains["blue"]])
         finally:
             try:
                 self.revopoint.set_exposure(resting_exposure)

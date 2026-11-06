@@ -15,7 +15,9 @@ Each run is written to <data_root>/<date>/<name>/:
                                   depth_<exposure> / mono_<exposure> arrays,
                                   and (unless --no-color) color, the color
                                   camera's frame, with color_frames, how many
-                                  frames its median was taken over
+                                  frames its median was taken over, and
+                                  white_balance_gains, the red, green and blue
+                                  gains the camera was using
 
     python -m lat_lon_scanner.capture duck
 """
@@ -126,12 +128,16 @@ def run_scan(stage, scanner, poses, run_directory, exposures = scanner_module.de
             if "color" in capture:
                 arrays["color"] = capture["color"]
                 arrays["color_frames"] = capture["color_frames"]
+                if "white_balance_gains" in capture:
+                    arrays["white_balance_gains"] = capture["white_balance_gains"]
         np.savez_compressed(run_directory / f"view_{view_index:03d}.npz", **arrays)
 
         prewarnings = [axis for axis, warned in stage.driver_prewarnings().items() if warned]
         elapsed = time.monotonic() - start_time
+        gains = arrays.get("white_balance_gains")
         print(f"view {view_index + 1:3d}/{len(poses)}  latitude {latitude:6.1f}  longitude {longitude:6.1f}  "
-              f"{elapsed:6.0f} s" + (f"  DRIVER PRE-WARNING {prewarnings}" if prewarnings else ""), flush = True)
+              f"{elapsed:6.0f} s" + (f"  white balance {gains.round(2)}" if gains is not None else "")
+              + (f"  DRIVER PRE-WARNING {prewarnings}" if prewarnings else ""), flush = True)
 
     stage.move_to(0.0, 0.0, speed)
     run_information["finished"] = datetime.datetime.now().isoformat(timespec = "seconds")
