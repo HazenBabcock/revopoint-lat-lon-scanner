@@ -255,7 +255,7 @@ def test_color_camera_occlusion():
     assert wall_seen[far_away].all()
     assert not seen[-1] and facing[-1] < 0
     assert seen[:len(square)].all()
-    expected = reconstruct.srgb_to_linear(np.full(3, 128 / 255)) @ reconstruct.color_camera_to_linear_srgb
+    expected = reconstruct.srgb_to_linear(np.full(3, 128 / 255))
     assert np.allclose(colors[seen], expected)
 
 
@@ -274,10 +274,23 @@ def test_photo_colors_weight_frames_by_facing():
                    (np.linalg.inv(turned), np.full((800, 1280, 3), 200, np.uint8), color_camera)]
     colors, frame_counts = reconstruct.photo_colors(square, normals, color_views)
     center = np.argmin(np.linalg.norm(square - [0.0, 0.0, 100.0], axis = 1))
-    head_on, at_60 = (reconstruct.srgb_to_linear(np.full(3, value / 255)) @ reconstruct.color_camera_to_linear_srgb
-                      for value in (100, 200))
+    head_on, at_60 = (reconstruct.srgb_to_linear(np.full(3, value / 255)) for value in (100, 200))
     assert frame_counts[center] == 2
     assert np.allclose(colors[center], (head_on + 0.5 * at_60) / 1.5)
+
+
+def test_mount_median_color_needs_enough_of_the_mount():
+    mount_colors = np.tile([0.5, 0.25, 0.01], (reconstruct.minimum_mount_white_points + 5, 1))
+    mount_colors[0] = np.nan
+    mount_colors[1] = [0.9, 0.9, 0.9]
+    assert np.allclose(reconstruct.mount_median_color(mount_colors), [0.5, 0.25, 0.01])
+    assert reconstruct.mount_median_color(mount_colors[:50]) is None
+
+
+def test_low_blue_warning():
+    # Mount colors measured on figurine_2 and the 2026-11-06 flower pot, whose frames had far too little blue.
+    assert reconstruct.low_blue_warning(np.array([0.386, 0.220, 0.067])) is None
+    assert reconstruct.low_blue_warning(np.array([0.519, 0.286, 0.0116])) is not None
 
 
 def test_mesh_bridges_small_holes_and_trims_large_ones():

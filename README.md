@@ -152,6 +152,13 @@ patch as brown and a green one as gray), so a full color fit to the card's
 patches did worse than the white balance alone. An LED lamp, with little
 infrared, may give cleaner color than an incandescent one.
 
+Now and then a run's frames have far less blue than those gains expect, and
+the reconstruction warns about it. One such run turned a light tan flower pot
+yellow-green and its light purple flowers tan, for no known reason.
+`--white-from-mount` then takes the white balance and brightness from the
+run's own white nylon post and cap instead. It isn't the default because the
+fixed gains look better on normal runs.
+
 ### Filling in a dark area
 
 A dark area, such as the duck's red beak, keeps getting depth at longer

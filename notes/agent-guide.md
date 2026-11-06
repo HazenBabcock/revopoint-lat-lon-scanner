@@ -149,6 +149,12 @@ method). What the code relies on:
 - The white balance gains in `reconstruct.py` were measured under one lamp.
   A full 3 × 3 color fit to a color card did worse; the camera seems to see
   near-infrared.
+- `--white-from-mount` treats the median color of the top of the post and cap
+  as white, for a run with too little blue (`reconstruct` warns). Leave it off
+  otherwise: the author preferred the fixed gains on the duck and figurine_2,
+  where it paled the duck and turned dark hair purple. Treating the nylon as
+  neutral matched the flower pot's real colors better than a tint measured
+  against the color card did.
 - The projector's stripes are in every color frame in the same place, so
   averaging frames doesn't remove them; averaging across views does.
 

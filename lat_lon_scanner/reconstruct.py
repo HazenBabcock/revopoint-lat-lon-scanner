@@ -136,7 +136,23 @@ mesh_trim_millimeters = 1.0
 # alike (navy as brown, green as gray), and the fit bent other hues to match
 # (mean CIE76 delta E 19 under the lamp, 17.5 in daylight).
 color_white_balance_gains = np.array([0.627, 1.152, 1.894])
-color_camera_to_linear_srgb = np.diag(color_white_balance_gains)
+
+# Some runs have far less blue than those gains expect. Under them the mount's
+# white nylon reads 0.5-0.6 as much blue as green (the duck, figurine_2), but
+# 0.07 on the 2026-11-06 flower pot, for no known reason, which left its light
+# tan pot yellow-green and its light purple flowers tan. A run below this ratio
+# draws a warning. --white-from-mount then takes the white from the run's own
+# mount instead: the post and cap down to this far below the mount's top, of
+# which at least this many points must be seen. It isn't the default because
+# on the duck and figurine_2 the fixed gains looked better: the mount's white
+# paled the duck and turned figurine_2's hair purple.
+minimum_mount_blue_ratio = 0.25
+mount_white_height_millimeters = 8.0
+minimum_mount_white_points = 200
+
+# The linear color --white-from-mount brings the mount's median to. It sits
+# below 1 because surfaces facing the lamp are brighter than that median.
+white_nylon_color = np.array([0.8, 0.8, 0.8])
 
 
 class Progress(object):
@@ -261,9 +277,9 @@ def view_colors(points, normals, color_frame, color_camera, spacing_millimeters,
     """
     Return (colors, facing) for surface points (rectified left camera frame,
     mm, with outward normals) from one view's color frame: each point's color
-    as linear RGB white balanced with color_camera_to_linear_srgb, NaN where
-    the color camera doesn't see it, and the cosine of the angle between its
-    normal and the direction to the color camera.
+    as linear RGB, not yet white balanced, NaN where the color camera doesn't
+    see it, and the cosine of the angle between its normal and the direction to
+    the color camera.
 
     A point is seen if it faces the color camera (facing above
     minimum_facing_cosine) and nothing nearer than occlusion_millimeters lands
@@ -300,18 +316,18 @@ def view_colors(points, normals, color_frame, color_camera, spacing_millimeters,
     right_weight, bottom_weight = (x - left)[:, None], (y - top)[:, None]
     sampled = ((frame[top, left] * (1 - right_weight) + frame[top, left + 1] * right_weight) * (1 - bottom_weight)
                + (frame[top + 1, left] * (1 - right_weight) + frame[top + 1, left + 1] * right_weight) * bottom_weight)
-    colors[seen] = sampled @ color_camera_to_linear_srgb
+    colors[seen] = sampled
     return colors, facing
 
 
 def photo_colors(points, normals, color_views, progress = None):
     """
-    Return (colors, frame_counts): each surface point's color (object frame,
-    mm, with outward normals) from every color frame that sees it (see
-    view_colors), averaged with each frame weighted by how squarely the point
-    faces its camera, NaN where none does; and how many frames saw each point.
-    color_views holds (camera_to_object transform, color frame, color camera)
-    for each view with a color frame.
+    Return (colors, frame_counts): each surface point's linear color, not yet
+    white balanced (object frame, mm, with outward normals), from every color
+    frame that sees it (see view_colors), averaged with each frame weighted by
+    how squarely the point faces its camera, NaN where none does; and how many
+    frames saw each point. color_views holds (camera_to_object transform, color
+    frame, color camera) for each view with a color frame.
 
     Averaging over frames removes the projector's stripes, which stay put in
     the frames while the object turns under them. Every frame that sees a
@@ -784,6 +800,36 @@ def mount_warning(mount_top):
             f"turntable axis can pass for the mount; if the object lost its lower part, set --mount-top.")
 
 
+def mount_white_points(points, normals, axis_point, up, mount_top, mount_radius, voxel_size = 0.5):
+    """Return (points, normals) of the post and cap just below the object, thinned to voxel_size."""
+    height = (points - axis_point) @ up
+    radial = np.linalg.norm((points - axis_point) - np.outer(height, up), axis = 1)
+    near_top = (height >= mount_top - mount_white_height_millimeters) & (height < mount_top) & (radial < mount_radius)
+    cloud = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(points[near_top]))
+    cloud.normals = open3d.utility.Vector3dVector(normals[near_top])
+    cloud = cloud.voxel_down_sample(voxel_size)
+    thinned_normals = np.asarray(cloud.normals)
+    return np.asarray(cloud.points), thinned_normals / np.linalg.norm(thinned_normals, axis = 1, keepdims = True)
+
+
+def mount_median_color(mount_colors):
+    """The median of the mount's linear colors (NaN where unseen), or None if too few are seen."""
+    seen = ~np.isnan(mount_colors[:, 0])
+    if seen.sum() < minimum_mount_white_points:
+        return None
+    return np.median(mount_colors[seen], axis = 0)
+
+
+def low_blue_warning(mount_color):
+    """A warning if the fixed gains would leave the mount with far too little blue, otherwise None."""
+    balanced = mount_color * color_white_balance_gains
+    blue_ratio = balanced[2] / balanced[1]
+    if blue_ratio >= minimum_mount_blue_ratio:
+        return None
+    return (f"  warning: the color frames have unusually little blue (the mount reads {blue_ratio:.2f} as much blue as "
+            f"green, normally 0.5-0.6). If the colors look too yellow, set --white-from-mount.")
+
+
 def keep_largest_cluster(cloud, neighbor_distance):
     """Drop everything not connected (within neighbor_distance) to the largest piece."""
     labels = np.array(cloud.cluster_dbscan(eps = neighbor_distance, min_points = 5))
@@ -903,12 +949,13 @@ def load_run_views(run_directory, depth_band_raw = default_depth_band_raw, progr
 
 def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, voxel_size = default_voxel_millimeters,
                 refine = True, extra_runs = (), output_name = "reconstruction", depth_band_raw = default_depth_band_raw,
-                make_mesh = True, mount_top = None):
+                make_mesh = True, mount_top = None, white_from_mount = False):
     """
     Reconstruct the object from run_directory. The stage axes are fitted from
     that run alone; views from extra_runs (taken without moving the scanner or
     re-zeroing the stage) are placed with the same axes and merged in.
-    mount_top is passed on to remove_mount.
+    mount_top is passed on to remove_mount. With white_from_mount, the color
+    frames are white balanced from the mount rather than the fixed gains.
     """
     run_directory = pathlib.Path(run_directory)
     output_directory = run_directory / output_name
@@ -975,6 +1022,7 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     warning = mount_warning(mount_top) if mount_was_found else None
     if warning is not None:
         progress.report(warning)
+    white_points, white_normals = mount_white_points(points, normals, axis_point, up, mount_top, mount_radius)
 
     cloud = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(points[keep]))
     cloud.normals = open3d.utility.Vector3dVector(normals[keep])
@@ -990,17 +1038,30 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     final_brightness = np.asarray(cloud.colors)[:, 0].copy()
     color_record = None
     if color_views:
-        # Colors from the frames that see each point, scaled so the brightest 1% reach white
-        # (the correction was fitted under a different light), and gray where none does.
-        point_colors, frame_counts = photo_colors(final_points, final_normals, color_views, progress)
+        # Colors from the frames that see each point, gray where none does. The mount's points go
+        # in with the object's so that the object hides them where it should. The fixed gains are
+        # scaled so the brightest 1% reach white (they were fitted under a different light).
+        all_colors, all_frame_counts = photo_colors(np.concatenate([final_points, white_points]),
+                                                    np.concatenate([final_normals, white_normals]), color_views, progress)
+        point_colors, frame_counts = all_colors[:len(final_points)], all_frame_counts[:len(final_points)]
         colored = ~np.isnan(point_colors[:, 0])
-        level_scale = 1.0 / np.percentile(point_colors[colored].max(axis = 1), 99)
+        mount_color = mount_median_color(all_colors[len(final_points):])
+        if white_from_mount and mount_color is not None:
+            color_gains, white_source = white_nylon_color / mount_color, "the mount"
+        else:
+            balanced = point_colors[colored] * color_white_balance_gains
+            color_gains = color_white_balance_gains / np.percentile(balanced.max(axis = 1), 99)
+            white_source = "the fixed gains"
+        progress.report(f"  white balance from {white_source}: gains {color_gains.round(2)}")
+        warning = low_blue_warning(mount_color) if mount_color is not None and not white_from_mount else None
+        if warning is not None:
+            progress.report(warning)
         final_colors = np.full((len(final_points), 3), 0.5)
-        final_colors[colored] = linear_to_srgb(point_colors[colored] * level_scale)
+        final_colors[colored] = linear_to_srgb(point_colors[colored] * color_gains)
         cloud.colors = open3d.utility.Vector3dVector(final_colors)
         color_record = {"color_frames" : len(color_views), "colored_fraction" : float(colored.mean()),
                         "median_frames_per_point" : float(np.median(frame_counts[colored])),
-                        "level_scale" : float(level_scale)}
+                        "white_source" : white_source, "gains" : color_gains.tolist()}
         progress.report(f"  colored {colored.mean():.1%} of the points from {len(color_views)} color frames, "
                         f"a median of {color_record['median_frames_per_point']:.0f} per point")
     open3d.io.write_point_cloud(str(output_directory / "point_cloud.ply"), cloud)
@@ -1017,7 +1078,7 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
         if color_views:
             colors, _ = photo_colors(vertices, vertex_normals, color_views, progress)
             seen = ~np.isnan(colors[:, 0])
-            vertex_colors[seen] = linear_to_srgb(colors[seen] * level_scale)
+            vertex_colors[seen] = linear_to_srgb(colors[seen] * color_gains)
         mesh.vertex_colors = open3d.utility.Vector3dVector(vertex_colors)
         open3d.io.write_triangle_mesh(str(output_directory / "mesh.ply"), mesh)
         mesh_record = {"octree_depth" : octree_depth, "trim_millimeters" : mesh_trim_millimeters,
@@ -1091,13 +1152,17 @@ def main():
                         help = "Cut the mount at this height, in mm along the turntable axis from the rotation center "
                                "(negative is below it), and keep everything above, instead of searching for the mount. "
                                "For a round object on the axis that passes for the mount.")
+    parser.add_argument("--white-from-mount", action = "store_true",
+                        help = "White balance from the mount's white nylon instead of the fixed gains, for a run whose "
+                               "frames have unusually little blue (the reconstruction warns about those).")
     arguments = parser.parse_args()
     depth_band_raw = default_depth_band_raw
     if arguments.depth_range is not None:
         depth_band_raw = tuple(distance / scanner_module.depth_unit_millimeters for distance in arguments.depth_range)
     reconstruct(arguments.run_directory, arguments.crop_radius, arguments.voxel, refine = arguments.refine,
                 extra_runs = arguments.extra_runs, output_name = arguments.output_name, depth_band_raw = depth_band_raw,
-                make_mesh = arguments.make_mesh, mount_top = arguments.mount_top)
+                make_mesh = arguments.make_mesh, mount_top = arguments.mount_top,
+                white_from_mount = arguments.white_from_mount)
 
 
 if __name__ == "__main__":
