@@ -199,6 +199,19 @@ python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/bust --depth-range
 in mm (default 73–194). `--crop-radius` keeps points within that distance of
 the rotation center, in mm (default 32).
 
+### Round objects
+
+The mount is found by its round cross-section, so a round object centered on
+the turntable axis, such as a small flower pot, can pass for it and be cut
+away. The reconstruction warns when the mount's top comes within 5 mm of the
+rotation center. If the object lost its lower part, give the height of the
+cap's top yourself, in mm along the turntable axis from the rotation center
+(negative is below it). Everything above it is kept:
+
+```bash
+python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/flower_pot --mount-top -8.5
+```
+
 ## Tests
 
 ```bash

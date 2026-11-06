@@ -22,8 +22,9 @@ Steps:
    likely on its gel pad, and the refinement merged the layers that left
    (misalignment 0.426 -> 0.324 mm). On the duck it made no difference.
 4. All views are merged and cropped to the object: a sphere around the
-   rotation center, with the post and cap it sits on cut away. The result is
-   thinned, cleaned of stray points and disconnected fragments, and given
+   rotation center, with the post and cap it sits on cut away (--mount-top
+   sets the height for a round object that passes for the mount). The result
+   is thinned, cleaned of stray points and disconnected fragments, and given
    surface normals.
 5. If the run has color frames, each final point is colored from every
    color frame that sees it (projected through the color camera's
@@ -92,6 +93,12 @@ minimum_view_points = 100
 
 default_crop_radius_millimeters = 32.0
 default_voxel_millimeters = 0.3
+
+# A mount found with its top less than this far below the rotation center draws
+# a warning; real ones have ended 9-32 mm below it. A round object on the
+# turntable axis can pass for the mount: the 2026-11-06 flower pot's 7 mm of
+# tapered wall outran the 6 mm post, and it was cut away up to the rotation center.
+mount_warning_millimeters = 5.0
 
 # The stage fits stop when a round of Powell's search over all the parameters
 # lowers the misalignment by less than this fraction (about 0.001 mm at
@@ -703,12 +710,13 @@ def refine_poses(object_clouds, poses, voxel_size = 0.8, maximum_distance = 1.0,
     return [np.linalg.inv(average) @ correction for correction in corrections]
 
 
-def remove_mount(points, axis_point, up, slice_millimeters = 0.5):
+def remove_mount(points, axis_point, up, slice_millimeters = 0.5, mount_top = None):
     """
     Return (mask keeping the object, mount top height, mount radius) to drop
     the post and cap the object sits on. axis_point is the point on the
     turntable axis level with the rotation center; heights are measured from it
-    along up.
+    along up. With mount_top given, the mount isn't searched for: everything
+    above that height is kept.
 
     The mount is a stack of cylinders on the turntable axis, and a slice through
     a cylinder wall puts every point at nearly the same distance from the axis,
@@ -721,6 +729,10 @@ def remove_mount(points, axis_point, up, slice_millimeters = 0.5):
     """
     height = (points - axis_point) @ up
     radial = np.linalg.norm((points - axis_point) - np.outer(height, up), axis = 1)
+    if mount_top is not None:
+        below_top = (height >= mount_top - slice_millimeters) & (height < mount_top)
+        mount_radius = float(np.percentile(radial[below_top], 90)) + 0.5 if below_top.any() else 0.0
+        return height >= mount_top, mount_top, mount_radius
     slice_bottoms = np.arange(np.floor(height.min()), 0.0, slice_millimeters)
     spreads, outer_radii = [], []
     for bottom in slice_bottoms:
@@ -762,6 +774,14 @@ def remove_mount(points, axis_point, up, slice_millimeters = 0.5):
     mount_top = float(slice_bottoms[last_cylinder_index] + slice_millimeters)
     keep = (height >= mount_top - 1.0) & ~((height < mount_top + 1.5) & (radial < mount_radius))
     return keep, mount_top, mount_radius
+
+
+def mount_warning(mount_top):
+    """A warning if the mount found ends suspiciously near the rotation center, otherwise None."""
+    if mount_top < -mount_warning_millimeters:
+        return None
+    return (f"  warning: the mount's top is only {abs(mount_top):.1f} mm from the rotation center. A round object on the "
+            f"turntable axis can pass for the mount; if the object lost its lower part, set --mount-top.")
 
 
 def keep_largest_cluster(cloud, neighbor_distance):
@@ -883,11 +903,12 @@ def load_run_views(run_directory, depth_band_raw = default_depth_band_raw, progr
 
 def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, voxel_size = default_voxel_millimeters,
                 refine = True, extra_runs = (), output_name = "reconstruction", depth_band_raw = default_depth_band_raw,
-                make_mesh = True):
+                make_mesh = True, mount_top = None):
     """
     Reconstruct the object from run_directory. The stage axes are fitted from
     that run alone; views from extra_runs (taken without moving the scanner or
     re-zeroing the stage) are placed with the same axes and merged in.
+    mount_top is passed on to remove_mount.
     """
     run_directory = pathlib.Path(run_directory)
     output_directory = run_directory / output_name
@@ -947,9 +968,13 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
     # look out of round.
     up = model.longitude_axis
     axis_point = model.longitude_point + ((center - model.longitude_point) @ up) * up
-    keep, mount_top, mount_radius = remove_mount(points, axis_point, up)
+    mount_was_found = mount_top is None
+    keep, mount_top, mount_radius = remove_mount(points, axis_point, up, mount_top = mount_top)
     progress.report(f"  mount cut away: top {mount_top:.1f} mm along the turntable axis from the rotation center, "
                     f"radius {mount_radius:.1f} mm")
+    warning = mount_warning(mount_top) if mount_was_found else None
+    if warning is not None:
+        progress.report(warning)
 
     cloud = open3d.geometry.PointCloud(open3d.utility.Vector3dVector(points[keep]))
     cloud.normals = open3d.utility.Vector3dVector(normals[keep])
@@ -1062,13 +1087,17 @@ def main():
                         help = "Output directory inside the run (default %(default)s).")
     parser.add_argument("--no-mesh", dest = "make_mesh", action = "store_false",
                         help = "Skip fitting a mesh to the point cloud.")
+    parser.add_argument("--mount-top", type = float, default = None,
+                        help = "Cut the mount at this height, in mm along the turntable axis from the rotation center "
+                               "(negative is below it), and keep everything above, instead of searching for the mount. "
+                               "For a round object on the axis that passes for the mount.")
     arguments = parser.parse_args()
     depth_band_raw = default_depth_band_raw
     if arguments.depth_range is not None:
         depth_band_raw = tuple(distance / scanner_module.depth_unit_millimeters for distance in arguments.depth_range)
     reconstruct(arguments.run_directory, arguments.crop_radius, arguments.voxel, refine = arguments.refine,
                 extra_runs = arguments.extra_runs, output_name = arguments.output_name, depth_band_raw = depth_band_raw,
-                make_mesh = arguments.make_mesh)
+                make_mesh = arguments.make_mesh, mount_top = arguments.mount_top)
 
 
 if __name__ == "__main__":

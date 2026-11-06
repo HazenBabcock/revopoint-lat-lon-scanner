@@ -117,6 +117,12 @@ sin(latitude) (objects on the gel pad tip as the cradle tilts; see the
 `StageModel` docstring), and writes them to `stage_axes.json` next to each
 point cloud. Point clouds are in that frame, in millimeters.
 
+Heights in `remove_mount` and `--mount-top` run along the turntable axis from
+the rotation center, negative below it. To find `--mount-top` for a round
+object that passed for the mount, print each 0.5 mm slice's 10th and 90th
+percentile radius as `remove_mount` measures them. The post's radius is about
+4.35 mm and the cap's 7.15 mm, and the object starts where the cap ends.
+
 ## Color camera
 
 `capture.py` saves a color frame per view, and `reconstruct.py` colors the

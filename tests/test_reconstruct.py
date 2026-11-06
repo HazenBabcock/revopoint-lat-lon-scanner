@@ -146,6 +146,35 @@ def test_mount_is_measured_from_the_turntable_axis():
         reconstruct.remove_mount(points, np.array([0.8, 0.0, 0.0]), up)
 
 
+def test_round_object_passes_for_the_mount_unless_mount_top_is_given():
+    # 2026-11-06 flower pot: its tapered wall made a longer run of round slices
+    # than the post, so it was taken for the post and cut away.
+    random_generator = np.random.default_rng(6)
+
+    def tapered_wall(bottom_radius, top_radius, bottom, top, count):
+        heights = random_generator.uniform(bottom, top, count)
+        radii = np.interp(heights, [bottom, top], [bottom_radius, top_radius]) + random_generator.normal(0, 0.05, count)
+        angles = random_generator.uniform(0, 2 * np.pi, count)
+        return np.column_stack([radii * np.cos(angles), radii * np.sin(angles), heights])
+
+    mount = np.concatenate([tapered_wall(4.35, 4.35, -17.5, -11.5, 20000), tapered_wall(7.15, 7.15, -11.5, -9.0, 10000)])
+    pot = tapered_wall(5.7, 8.0, -9.0, -1.0, 30000)
+    plant = random_generator.uniform(-9, 9, (20000, 3)) * [1, 1, 0.5] + [0, 0, 3.5]
+    points = np.concatenate([mount, pot, plant])
+    up = np.array([0.0, 0.0, 1.0])
+
+    _, found_top, _ = reconstruct.remove_mount(points, np.zeros(3), up)
+    assert found_top > -3.0
+    assert reconstruct.mount_warning(found_top) is not None
+
+    keep, mount_top, mount_radius = reconstruct.remove_mount(points, np.zeros(3), up, mount_top = -9.0)
+    assert mount_top == -9.0
+    assert 7.5 < mount_radius < 7.8
+    assert not keep[:len(mount)].any()
+    assert keep[len(mount):len(mount) + len(pot)].all()
+    assert reconstruct.mount_warning(-14.5) is None
+
+
 def rotate_about(points, axis, point, degrees):
     return Rotation.from_rotvec(np.radians(degrees) * axis).apply(points - point) + point
 
