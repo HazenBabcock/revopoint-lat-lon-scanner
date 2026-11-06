@@ -157,11 +157,11 @@ method). What the code relies on:
   A full 3 × 3 color fit to a color card did worse; the camera seems to see
   near-infrared.
 - `--white-from-mount` treats the median color of the top of the post and cap
-  as white, for a run with too little blue (`reconstruct` warns). Leave it off
-  otherwise: the author preferred the fixed gains on the duck and figurine_2,
-  where it paled the duck and turned dark hair purple. Treating the nylon as
-  neutral matched the flower pot's real colors better than a tint measured
-  against the color card did.
+  as `white_nylon_color`, for a run with too little blue (`reconstruct` warns).
+  Leave it off otherwise: the author preferred the fixed gains on the duck and figurine_2,
+  where it paled the duck and turned dark hair purple. Those were with the nylon
+  taken as neutral. `white_nylon_color` is now slightly warm, picked by eye on one
+  pot, so check another object before relying on it.
 - The projector's stripes are in every color frame in the same place, so
   averaging frames doesn't remove them; averaging across views does.
 

@@ -159,9 +159,14 @@ minimum_mount_white_points = 200
 # their median draws a warning: one balance then can't fit all its frames.
 maximum_white_balance_shift = 0.05
 
-# The linear color --white-from-mount brings the mount's median to. It sits
-# below 1 because surfaces facing the lamp are brighter than that median.
-white_nylon_color = np.array([0.8, 0.8, 0.8])
+# The linear color --white-from-mount brings the mount's median to: red 1.09 and
+# blue 0.96 of green, scaled so that red is 0.8. The scale leaves room for
+# surfaces facing the lamp, which are brighter than that median. The color was
+# picked by eye on the small flower pot's 2026-11-06 rescan, a quarter of the way
+# from neutral towards the nylon's color under the card's gains (1.43, 1, 0.85).
+# As neutral its light tan pot came out too gray, and further on its flowers and
+# leaves drifted from their real light purple and light green.
+white_nylon_color = 0.8 * np.array([1.09, 1.0, 0.96]) / 1.09
 
 
 class Progress(object):
