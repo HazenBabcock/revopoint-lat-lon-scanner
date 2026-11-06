@@ -121,7 +121,8 @@ Heights in `remove_mount` and `--mount-top` run along the turntable axis from
 the rotation center, negative below it. To find `--mount-top` for a round
 object that passed for the mount, print each 0.5 mm slice's 10th and 90th
 percentile radius as `remove_mount` measures them. The post's radius is about
-4.35 mm and the cap's 7.15 mm, and the object starts where the cap ends.
+4.35 mm and the cap's 7.15 mm, and the object starts where the cap ends. Use
+`--reuse-fit` for the rerun, which skips most of the time.
 
 ## Color camera
 

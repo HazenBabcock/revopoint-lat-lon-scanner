@@ -175,6 +175,22 @@ def test_round_object_passes_for_the_mount_unless_mount_top_is_given():
     assert reconstruct.mount_warning(-14.5) is None
 
 
+def test_saved_fit_can_be_reused(tmp_path):
+    model = reconstruct.StageModel([0.01, 0.0, 0.0, 0.02, 1.0, 120.0, 40.0, 121.0], [40.0, 1.0, 120.0], 1.5, -5.0)
+    poses = [(0.0, 0.0), (30.0, 90.0)]
+    transforms = [model.camera_to_object(*pose) for pose in poses]
+    path = tmp_path / reconstruct.fit_file_name
+    reconstruct.save_fit(path, model, poses, transforms, 0.4, 0.5, 0.3)
+    loaded_model, loaded_transforms, fit_misalignment, before, after = reconstruct.load_fit(path, poses)
+    assert np.allclose(loaded_model.camera_to_object(45.0, 10.0), model.camera_to_object(45.0, 10.0))
+    assert np.allclose(loaded_transforms, transforms)
+    assert (fit_misalignment, before, after) == (0.4, 0.5, 0.3)
+    with pytest.raises(RuntimeError):
+        reconstruct.load_fit(path, poses[:1])
+    with pytest.raises(RuntimeError):
+        reconstruct.load_fit(tmp_path / "missing.npz", poses)
+
+
 def rotate_about(points, axis, point, degrees):
     return Rotation.from_rotvec(np.radians(degrees) * axis).apply(points - point) + point
 

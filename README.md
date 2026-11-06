@@ -86,7 +86,7 @@ This needs the `reconstruct` extras (Open3D, SciPy) and writes
 `reconstruction/` inside the run: `point_cloud.ply` (positions in mm, normals,
 and color, or the scanner's grayscale brightness for runs without color
 frames), `mesh.ply` (a triangle mesh fitted to the points, colored the same
-way; `--no-mesh` skips it), `stage_axes.json`, and `preview_*.png` renderings
+way; `--no-mesh` skips it), `stage_axes.json`, `fit.npz`, and `preview_*.png` renderings
 from six directions.
 
 The stage needs no separate calibration. The two rotation axes are fitted from
@@ -217,6 +217,17 @@ cap's top yourself, in mm along the turntable axis from the rotation center
 
 ```bash
 python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/flower_pot --mount-top -8.5
+```
+
+### Redoing only the last steps
+
+Most of a reconstruction's time goes to fitting the stage and refining the
+views. To change only what comes after, such as the mount cut or the white
+balance, take those from an earlier output (its `fit.npz`) with `--reuse-fit`:
+
+```bash
+python -m lat_lon_scanner.reconstruct ~/Data/revopoint/<date>/flower_pot --reuse-fit reconstruction \
+    --mount-top -8.5 --output-name reconstruction_with_pot
 ```
 
 ## Tests

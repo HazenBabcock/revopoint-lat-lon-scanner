@@ -38,7 +38,9 @@ Steps:
 Results go to <run>/reconstruction/ (or --output-name): point_cloud.ply
 (points, normals, and color, or the scanner's grayscale brightness for runs
 without color frames), mesh.ply (vertices with normals and the same kind of
-color, and triangles), stage_axes.json, and preview_*.png renderings. --extra-runs merges in more
+color, and triangles), stage_axes.json, fit.npz (the stage fit and each view's
+pose, which --reuse-fit takes from an earlier output to skip steps 2 and 3), and
+preview_*.png renderings. --extra-runs merges in more
 runs of the same object, such as a close-up of one area at a longer exposure,
 placed using the main run's fitted axes.
 """
@@ -93,6 +95,9 @@ minimum_view_points = 100
 
 default_crop_radius_millimeters = 32.0
 default_voxel_millimeters = 0.3
+
+# Saved in each output directory for --reuse-fit.
+fit_file_name = "fit.npz"
 
 # A mount found with its top less than this far below the rotation center draws
 # a warning; real ones have ended 9-32 mm below it. A round object on the
@@ -947,15 +952,61 @@ def load_run_views(run_directory, depth_band_raw = default_depth_band_raw, progr
     return poses, view_points, view_normals, view_brightness, view_color_frames
 
 
+def fit_views(view_points, poses, crop_radius, refine, progress):
+    """
+    Fit the stage and refine each view's pose. Returns (stage model, each
+    view's camera to object transform, the fit's misalignment, the misalignment
+    before refinement, and after it).
+    """
+    upright_index = nearest_upright_view(poses)
+    center_guess = estimate_center(view_points[upright_index])
+    progress.report(f"  first rotation center guess from the view at {poses[upright_index]}")
+    model, fit_misalignment = fit_stage_model(view_points, poses, center_guess, crop_radius, progress)
+    center, _ = model.rotation_center()
+    transforms = [model.camera_to_object(*pose) for pose in poses]
+    object_clouds = [apply_transform(transform, points[np.linalg.norm(points - center, axis = 1) < crop_radius])
+                     for transform, points in zip(transforms, view_points)]
+    pairs = neighbor_pairs(poses)
+    before = misalignment([downsample(cloud, 0.8) for cloud in object_clouds], pairs, 0.6)
+    if not refine:
+        return model, transforms, fit_misalignment, before, before
+    corrections = refine_poses(object_clouds, poses, progress = progress)
+    transforms = [correction @ transform for correction, transform in zip(corrections, transforms)]
+    object_clouds = [apply_transform(correction, cloud) for correction, cloud in zip(corrections, object_clouds)]
+    after = misalignment([downsample(cloud, 0.8) for cloud in object_clouds], pairs, 0.6)
+    progress.report(f"  joint refinement: misalignment {before:.3f} -> {after:.3f} mm")
+    return model, transforms, fit_misalignment, before, after
+
+
+def save_fit(path, model, poses, transforms, fit_misalignment, before, after):
+    """Save what fit_views returned, so that a later reconstruction can skip it (see load_fit)."""
+    np.savez(path, parameters = model.parameters, reference_point = model.reference_point,
+             nod = np.array([model.nod_gain_degrees, model.nod_pivot_height]), poses = np.array(poses),
+             transforms = np.array(transforms), misalignments = np.array([fit_misalignment, before, after]))
+
+
+def load_fit(path, poses):
+    """Return what save_fit saved at path, in the form fit_views returns it, for the views at poses."""
+    if not path.exists():
+        raise RuntimeError(f"{path} doesn't exist: that output has no saved fit to reuse")
+    with np.load(path) as fit:
+        if fit["poses"].shape != np.shape(poses) or not np.allclose(fit["poses"], poses):
+            raise RuntimeError(f"{path} has different views from this run (a view left out at another depth range?)")
+        model = StageModel(fit["parameters"], fit["reference_point"], *fit["nod"])
+        return (model, list(fit["transforms"]), *fit["misalignments"].tolist())
+
+
 def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, voxel_size = default_voxel_millimeters,
                 refine = True, extra_runs = (), output_name = "reconstruction", depth_band_raw = default_depth_band_raw,
-                make_mesh = True, mount_top = None, white_from_mount = False):
+                make_mesh = True, mount_top = None, white_from_mount = False, reuse_fit = None):
     """
     Reconstruct the object from run_directory. The stage axes are fitted from
     that run alone; views from extra_runs (taken without moving the scanner or
     re-zeroing the stage) are placed with the same axes and merged in.
     mount_top is passed on to remove_mount. With white_from_mount, the color
     frames are white balanced from the mount rather than the fixed gains.
+    reuse_fit names an earlier output directory of this run, whose stage fit
+    and view poses are used instead of fitting them again.
     """
     run_directory = pathlib.Path(run_directory)
     output_directory = run_directory / output_name
@@ -967,27 +1018,17 @@ def reconstruct(run_directory, crop_radius = default_crop_radius_millimeters, vo
                                                                                           progress)
     progress.report(f"{len(poses)} views loaded, {sum(len(p) for p in view_points)} points")
 
-    upright_index = nearest_upright_view(poses)
-    center_guess = estimate_center(view_points[upright_index])
-    progress.report(f"  first rotation center guess from the view at {poses[upright_index]}")
-    model, fit_misalignment = fit_stage_model(view_points, poses, center_guess, crop_radius, progress)
+    if reuse_fit is None:
+        model, transforms, fit_misalignment, before, after = fit_views(view_points, poses, crop_radius, refine, progress)
+    else:
+        model, transforms, fit_misalignment, before, after = load_fit(run_directory / reuse_fit / fit_file_name, poses)
+        progress.report(f"  stage fit and view poses reused from {reuse_fit}")
+    save_fit(output_directory / fit_file_name, model, poses, transforms, fit_misalignment, before, after)
     center, axis_gap = model.rotation_center()
     progress.report(f"  rotation center {center.round(2)} mm, axes {axis_gap:.2f} mm apart")
 
-    transforms = [model.camera_to_object(*pose) for pose in poses]
     near_center = [np.linalg.norm(points - center, axis = 1) < crop_radius for points in view_points]
     object_clouds = [apply_transform(transform, points[mask]) for transform, points, mask in zip(transforms, view_points, near_center)]
-    pairs = neighbor_pairs(poses)
-    check_clouds = [downsample(cloud, 0.8) for cloud in object_clouds]
-    before = misalignment(check_clouds, pairs, 0.6)
-    if refine:
-        corrections = refine_poses(object_clouds, poses, progress = progress)
-        transforms = [correction @ transform for correction, transform in zip(corrections, transforms)]
-        object_clouds = [apply_transform(correction, cloud) for correction, cloud in zip(corrections, object_clouds)]
-        after = misalignment([downsample(cloud, 0.8) for cloud in object_clouds], pairs, 0.6)
-        progress.report(f"  joint refinement: misalignment {before:.3f} -> {after:.3f} mm")
-    else:
-        after = before
 
     for extra_run in extra_runs:
         extra_poses, extra_points, extra_normals, extra_brightness, extra_color_frames = load_run_views(
@@ -1155,6 +1196,9 @@ def main():
     parser.add_argument("--white-from-mount", action = "store_true",
                         help = "White balance from the mount's white nylon instead of the fixed gains, for a run whose "
                                "frames have unusually little blue (the reconstruction warns about those).")
+    parser.add_argument("--reuse-fit", metavar = "OUTPUT_NAME", default = None,
+                        help = "Take the stage fit and view poses from an earlier output directory of this run instead "
+                               "of fitting them again, to change only later steps such as the mount cut or the color.")
     arguments = parser.parse_args()
     depth_band_raw = default_depth_band_raw
     if arguments.depth_range is not None:
@@ -1162,7 +1206,7 @@ def main():
     reconstruct(arguments.run_directory, arguments.crop_radius, arguments.voxel, refine = arguments.refine,
                 extra_runs = arguments.extra_runs, output_name = arguments.output_name, depth_band_raw = depth_band_raw,
                 make_mesh = arguments.make_mesh, mount_top = arguments.mount_top,
-                white_from_mount = arguments.white_from_mount)
+                white_from_mount = arguments.white_from_mount, reuse_fit = arguments.reuse_fit)
 
 
 if __name__ == "__main__":
